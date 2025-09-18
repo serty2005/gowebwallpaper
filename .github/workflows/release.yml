@@ -17,9 +17,12 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: "1.25.1"
+      
+      - name: Download dependencies
+        run: go mod tidy
 
       - name: Build binary
-        run: go build -o webwallpaper.exe main.go
+        run: go build -o webwallpaper.exe .
 
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v2
