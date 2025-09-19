@@ -29,6 +29,6 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
-          files: webwallpaper.exe
+          files: ./webwallpaper.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
