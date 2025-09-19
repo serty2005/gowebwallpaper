@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"syscall"
+	"time" // <-- ДОБАВЛЕН ИМПОРТ
 	"unsafe"
 
 	"github.com/jchv/go-webview2"
@@ -27,32 +28,63 @@ func main() {
 	}
 }
 
-// runApplication создает окно и запускает приложение.
+// runApplication создает окно и запускает приложение, ожидая появления монитора.
 func runApplication() {
 	config, err := loadConfig()
 	if err != nil {
 		log.Fatalf("Не удалось загрузить конфиг: %v", err)
 	}
 
-	var selectedMonitor *MonitorConfig
+	// 1. Находим целевой монитор в конфиге.
+	var targetMonitor *MonitorConfig
 	for i, monitor := range config.Monitors {
 		if monitor.Active {
-			selectedMonitor = &config.Monitors[i]
+			targetMonitor = &config.Monitors[i]
 			break
 		}
 	}
 
-	if selectedMonitor == nil {
+	if targetMonitor == nil {
 		if len(config.Monitors) > 0 {
-			selectedMonitor = &config.Monitors[0]
+			targetMonitor = &config.Monitors[0]
 			fmt.Println("Активный монитор не найден, используется первый в списке.")
 		} else {
 			log.Fatalf("В конфиге не найдено ни одного монитора.")
 		}
 	}
 
-	fmt.Printf("Запуск на мониторе: %s (Primary: %t)\n", selectedMonitor.Name, selectedMonitor.IsPrimary)
-	fmt.Printf("Координаты: (%d, %d), Размер: %dx%d\n", selectedMonitor.PositionX, selectedMonitor.PositionY, selectedMonitor.Width, selectedMonitor.Height)
+	fmt.Printf("Целевой монитор: %s, требуемое разрешение %dx%d\n", targetMonitor.Name, targetMonitor.Width, targetMonitor.Height)
+
+	// --- БЛОК ОЖИДАНИЯ МОНИТОРА ---
+	var foundMonitor *MonitorConfig
+	for foundMonitor == nil {
+		fmt.Println("Проверка подключенных мониторов...")
+		connectedMonitors := getMonitors()
+
+		// Ищем совпадение по разрешению
+		for i, connected := range connectedMonitors {
+			if connected.Width == targetMonitor.Width && connected.Height == targetMonitor.Height {
+				fmt.Printf("Целевой монитор найден: %s\n", connected.Name)
+				// Используем актуальные данные о мониторе из системы
+				foundMonitor = &connectedMonitors[i]
+				break
+			}
+		}
+
+		// Если монитор не найден, ждем и повторяем проверку
+		if foundMonitor == nil {
+			fmt.Println("Монитор не найден. Следующая проверка через 5 секунд...")
+			time.Sleep(5 * time.Second)
+		}
+	}
+
+	// Монитор найден, ждем 3 секунды для стабилизации
+	fmt.Println("Монитор подключен. Ожидание 3 секунды для стабилизации...")
+	time.Sleep(3 * time.Second)
+	// --- КОНЕЦ БЛОКА ОЖИДАНИЯ ---
+
+	fmt.Printf("Запуск на мониторе: %s (Primary: %t)\n", foundMonitor.Name, foundMonitor.IsPrimary)
+	fmt.Printf("Актуальные координаты: (%d, %d), Размер: %dx%d\n", foundMonitor.PositionX, foundMonitor.PositionY, foundMonitor.Width, foundMonitor.Height)
 
 	// Создаем webview с debug
 	w := webview2.New(true)
@@ -61,7 +93,8 @@ func runApplication() {
 	}
 	defer w.Destroy()
 
-	w.SetSize(selectedMonitor.Width, selectedMonitor.Height, webview2.HintNone)
+	// Используем данные НАЙДЕННОГО монитора
+	w.SetSize(foundMonitor.Width, foundMonitor.Height, webview2.HintNone)
 	w.SetTitle("Go Web Wallpaper")
 	w.Navigate(config.URL)
 
@@ -77,7 +110,8 @@ func runApplication() {
 	}
 
 	// Используем безопасную функцию для установки точной позиции окна
-	ret, _, _ = procSetWindowPos.Call(uintptr(hwnd), 0, uintptr(selectedMonitor.PositionX), uintptr(selectedMonitor.PositionY), uintptr(selectedMonitor.Width), uintptr(selectedMonitor.Height), uintptr(SWP_FRAMECHANGED|SWP_NOZORDER|SWP_NOACTIVATE))
+	// Используем данные НАЙДЕННОГО монитора
+	ret, _, _ = procSetWindowPos.Call(uintptr(hwnd), 0, uintptr(foundMonitor.PositionX), uintptr(foundMonitor.PositionY), uintptr(foundMonitor.Width), uintptr(foundMonitor.Height), uintptr(SWP_FRAMECHANGED|SWP_NOZORDER|SWP_NOACTIVATE))
 	if ret == 0 {
 		log.Fatalf("SetWindowPos failed")
 	}
