@@ -1,194 +1,87 @@
 # Go Web Wallpaper
 
-Go Web Wallpaper — это приложение для отображения веб-страниц в качестве обоев рабочего стола на конкретном мониторе. Идеально подходит для создания живых обоев с интерактивным веб-контентом.
+Go Web Wallpaper keeps a WebView2 page in a strict borderless fullscreen window on a selected Windows monitor. The window is forced to `topmost` and periodically repaired if Windows or another app moves/resizes it.
 
-## Особенности
+## Current Behavior
 
-- ✅ Отображение веб-страниц на конкретном мониторе
-- ✅ Полноэкранный режим без рамок окна
-- ✅ Поддержка множественных мониторов
-- ✅ Автоматическое определение мониторов
-- ✅ Ожидание подключения монитора при старте
-- ✅ Настройка через JSON конфигурацию
+- Runs on Windows 10/11.
+- Creates a local `config.json` on first start.
+- Lets you select the target monitor from the tray menu.
+- Keeps the WebView2 window borderless, fullscreen, and topmost.
+- Re-checks the selected monitor and repairs the window position every second.
+- Lets you select an audio output from the tray menu.
+- Injects an audio probe into the page:
+  - unmutes `<audio>` and `<video>` elements;
+  - reports playback events to the app log;
+  - tries to route media elements with `HTMLMediaElement.setSinkId()` when the browser exposes matching output devices.
 
-## Системные требования
+Audio routing is best-effort. WebView2 does not expose a simple native "set output device" API through the current Go wrapper, and pages using WebAudio may ignore `setSinkId()`. In that case Windows' default output is used.
 
-- Windows 10/11 (x64)
-- Go 1.21 или новее
-- WebView2 Runtime (устанавливается автоматически)
+## Build
 
-## Установка и запуск
-
-### 1. Сборка проекта
-
-```bash
-# Клонируйте репозиторий
-git clone <repository-url>
-cd goWebWallpaper2
-
-# Соберите проект
-go build -o gowebwallpaper.exe main.go config.go
+```powershell
+go test ./...
+go build -o gowebwallpaper.exe .
 ```
 
-### 2. Первый запуск (диагностика)
+To build without a console window:
 
-При первом запуске приложение автоматически проведет диагностику:
-
-```bash
-gowebwallpaper.exe
+```powershell
+go build -ldflags="-H windowsgui" -o gowebwallpaper.exe .
 ```
 
-Приложение:
-1. Просканирует все подключенные мониторы
-2. Создаст файл `config.json` с найденными мониторами
-3. Установит основной монитор как активный
-4. Завершит работу
+## Run
 
-### 3. Настройка конфигурации
+```powershell
+.\gowebwallpaper.exe
+```
 
-Отредактируйте файл `config.json`:
+On first run the app scans connected monitors and creates `config.json` next to the executable. During development it uses the repository `config.json` when that file already exists.
+
+## Logs
+
+The app writes runtime logs to `gowebwallpaper.log` next to `gowebwallpaper.exe`. The log records startup, tray actions, monitor search attempts, ambiguous monitor matches, window repair, restarts, audio selection, and audio playback probe events.
+
+## Tray Menu
+
+- `Start / Restart`: restarts the WebView2 window.
+- `Monitor`: selects the exact target monitor.
+- `Audio output`: selects the desired output device or `System default`.
+- `Exit`: stops the window and exits the tray app.
+
+## Config
+
+Use `config.example.json` as a template. `config.json` is local machine state and is ignored by git.
 
 ```json
 {
-  "URL": "https://example.com/wallpaper",
+  "URL": "http://localhost:3100/#/columns-fullscreen",
   "Monitors": [
     {
-      "Name": "\\\\.\\DISPLAY1",
-      "IsPrimary": true,
-      "Active": true,
-      "PositionX": 0,
-      "PositionY": 0,
-      "Width": 1920,
-      "Height": 1080
-    },
-    {
-      "Name": "\\\\.\\DISPLAY2", 
+      "Name": "\\\\.\\DISPLAY2",
       "IsPrimary": false,
-      "Active": false,
-      "PositionX": 1920,
-      "PositionY": 0,
-      "Width": 2560,
-      "Height": 1440
+      "Active": true,
+      "PositionX": -2160,
+      "PositionY": -395,
+      "Width": 1080,
+      "Height": 1920
     }
-  ]
+  ],
+  "Audio": {
+    "ID": "",
+    "Name": "",
+    "Active": false
+  }
 }
 ```
 
-**Параметры конфигурации:**
+Monitor matching prefers exact `Name`, then exact bounds, then a unique size-only fallback. If two monitors have the same size and neither name nor bounds match, the app refuses the ambiguous match instead of opening on the wrong screen.
 
-- `URL` — URL веб-страницы для отображения
-- `Monitors` — массив мониторов
-  - `Name` — системное имя монитора
-  - `IsPrimary` — является ли монитором по умолчанию
-  - `Active` — **ВАЖНО**: установите `true` для активного монитора
-  - `PositionX`, `PositionY` — координаты монитора
-  - `Width`, `Height` — разрешение монитора
+## Verification
 
-### 4. Запуск приложения
-
-```bash
-gowebwallpaper.exe
+```powershell
+gofmt -w (Get-ChildItem -Filter *.go | ForEach-Object { $_.FullName })
+go test ./...
+go vet ./...
+go build -o gowebwallpaper.exe .
 ```
-
-Приложение будет искать указанный монитор и отобразит веб-страницу на нем.
-
-## Структура проекта
-
-```
-goWebWallpaper2/
-├── main.go          # Основной код приложения
-├── config.go        # Работа с конфигурацией
-├── go.mod           # Зависимости Go
-├── go.sum           # Хеши зависимостей
-├── config.json      # Конфигурация (создается при первом запуске)
-└── README.md        # Эта инструкция
-```
-
-## Логика работы
-
-1. **Старт приложения**: Проверяется наличие `config.json`
-2. **Диагностика**: При отсутствии конфига сканируются мониторы
-3. **Поиск монитора**: Приложение ждет подключения указанного монитора
-4. **Запуск**: Создается безоконное окно с веб-контентом
-5. **Размещение**: Окно позиционируется на целевом мониторе
-
-## Рекомендуемые веб-страницы
-
-### Для обоев рабочего стола:
-- Анимированные фоны (CSS анимации, Canvas)
-- Погодные виджеты
-- Часы и календари
-- Минималистичные дашборды
-
-### Требования к веб-страницам:
-- Адаптивный дизайн
-- Автономная загрузка ресурсов
-- Отсутствие интерактивных элементов
-- Оптимизация производительности
-
-## Расширенные настройки
-
-### Изменение URL без пересборки
-Отредактируйте поле `URL` в `config.json` и перезапустите приложение.
-
-### Добавление новых мониторов
-1. Подключите новый монитор
-2. Удалите `config.json`
-3. Запустите приложение для новой диагностики
-4. Настройте активный монитор
-
-### Настройка разрешения
-Если монитор не найден, проверьте корректность `Width` и `Height` в конфиге.
-
-## Решение проблем
-
-### Монитор не найден
-- Проверьте подключение монитора
-- Убедитесь в правильности разрешения в конфиге
-- Попробуйте пересоздать конфиг (удалите `config.json`)
-
-### Веб-страница не загружается
-- Проверьте доступность URL в браузере
-- Убедитесь в наличии WebView2 Runtime
-- Проверьте сетевое подключение
-
-### Окно не отображается
-- Проверьте, что активный монитор существует
-- Убедитесь в корректности координат в конфиге
-- Попробуйте запустить от имени администратора
-
-### Производительность
-- Используйте оптимизированные веб-страницы
-- Избегайте тяжелых JavaScript библиотек
-- Рассмотрите отключение анимаций для слабых систем
-
-## Разработка
-
-### Добавление новых функций
-Код структурирован для легкого расширения:
-- `config.go` — работа с конфигурацией
-- `main.go` — основная логика и Windows API
-
-### Отладка
-Приложение выводит подробную информацию в консоль о:
-- Найденных мониторах
-- Процессе поиска целевого монитора
-- Позиционировании окна
-- Ошибках загрузки
-
-## Лицензия
-
-[Укажите вашу лицензию]
-
-## Вклад в проект
-
-Приветствуются предложения по улучшению:
-- Новые функции
-- Исправления ошибок
-- Документация
-- Оптимизация производительности
-
----
-
-**Версия**: 1.0  
-**Дата**: 2025-11-02

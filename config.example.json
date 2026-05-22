@@ -1,0 +1,19 @@
+{
+  "URL": "http://localhost:3100/#/columns-fullscreen",
+  "Monitors": [
+    {
+      "Name": "\\\\.\\DISPLAY2",
+      "IsPrimary": false,
+      "Active": true,
+      "PositionX": -2160,
+      "PositionY": -395,
+      "Width": 1080,
+      "Height": 1920
+    }
+  ],
+  "Audio": {
+    "ID": "",
+    "Name": "",
+    "Active": false
+  }
+}
