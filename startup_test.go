@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"testing"
 )
@@ -8,6 +9,7 @@ import (
 type fakeStartupUI struct {
 	statuses  []string
 	notices   []string
+	progress  []webView2DownloadProgress
 	promptURL string
 	promptOK  bool
 }
@@ -18,6 +20,11 @@ func (ui *fakeStartupUI) Status(message string) {
 
 func (ui *fakeStartupUI) Notice(message string) {
 	ui.notices = append(ui.notices, message)
+}
+
+func (ui *fakeStartupUI) Progress(message string, progress webView2DownloadProgress) {
+	ui.statuses = append(ui.statuses, message)
+	ui.progress = append(ui.progress, progress)
 }
 
 func (ui *fakeStartupUI) PromptURL(currentURL string, firstRun bool, webView2Version string) (string, bool, error) {
@@ -118,6 +125,10 @@ func TestStartupFlowExistingConfigSavesPromptedURLAndAutoStarts(t *testing.T) {
 func TestEnsureWebView2RuntimeDownloadsInstallsAndRestartsWhenMissing(t *testing.T) {
 	ui := &fakeStartupUI{}
 	versions := []string{"", "124.0.0.0"}
+	pkg := webView2InstallerPackage{
+		URL:      "https://example.test/webview2-x64.exe",
+		FileName: "MicrosoftEdgeWebView2RuntimeInstallerX64.exe",
+	}
 	downloaded := false
 	installed := false
 	restarted := false
@@ -128,16 +139,21 @@ func TestEnsureWebView2RuntimeDownloadsInstallsAndRestartsWhenMissing(t *testing
 			versions = versions[1:]
 			return next, nil
 		},
-		downloadBootstrapper: func(downloadURL string) (string, error) {
-			if downloadURL != webView2BootstrapperURL {
-				t.Fatalf("unexpected download URL: %s", downloadURL)
+		installerPackage: func() (webView2InstallerPackage, error) {
+			return pkg, nil
+		},
+		downloadInstaller: func(downloadPackage webView2InstallerPackage, reportProgress func(webView2DownloadProgress)) (string, error) {
+			if downloadPackage != pkg {
+				t.Fatalf("unexpected download package: %#v", downloadPackage)
 			}
 			downloaded = true
-			return `C:\Temp\MicrosoftEdgeWebview2Setup.exe`, nil
+			reportProgress(webView2DownloadProgress{Downloaded: 25, Total: 100})
+			reportProgress(webView2DownloadProgress{Downloaded: 100, Total: 100})
+			return `C:\Temp\MicrosoftEdgeWebView2RuntimeInstallerX64.exe`, nil
 		},
-		installBootstrapper: func(path string) error {
+		installInstaller: func(path string) error {
 			if path == "" {
-				t.Fatal("expected bootstrapper path")
+				t.Fatal("expected installer path")
 			}
 			installed = true
 			return nil
@@ -157,6 +173,9 @@ func TestEnsureWebView2RuntimeDownloadsInstallsAndRestartsWhenMissing(t *testing
 	if len(ui.notices) == 0 {
 		t.Fatal("expected user-facing install notice")
 	}
+	if len(ui.progress) != 2 {
+		t.Fatalf("expected download progress to be reported, got %d updates", len(ui.progress))
+	}
 }
 
 func TestEnsureWebView2RuntimeDoesNothingWhenInstalled(t *testing.T) {
@@ -167,11 +186,15 @@ func TestEnsureWebView2RuntimeDoesNothingWhenInstalled(t *testing.T) {
 		getInstalledVersion: func() (string, error) {
 			return "124.0.0.0", nil
 		},
-		downloadBootstrapper: func(string) (string, error) {
+		installerPackage: func() (webView2InstallerPackage, error) {
+			t.Fatal("did not expect installer package selection")
+			return webView2InstallerPackage{}, nil
+		},
+		downloadInstaller: func(webView2InstallerPackage, func(webView2DownloadProgress)) (string, error) {
 			calledDownload = true
 			return "", nil
 		},
-		installBootstrapper: func(string) error {
+		installInstaller: func(string) error {
 			t.Fatal("did not expect installer to run")
 			return nil
 		},
@@ -185,7 +208,69 @@ func TestEnsureWebView2RuntimeDoesNothingWhenInstalled(t *testing.T) {
 		t.Fatalf("ensureWebView2Runtime returned error: %v", err)
 	}
 	if calledDownload {
-		t.Fatal("did not expect bootstrapper download when runtime is installed")
+		t.Fatal("did not expect installer download when runtime is installed")
+	}
+}
+
+func TestWebView2StandaloneInstallerPackageUsesArchitectureSpecificURL(t *testing.T) {
+	tests := []struct {
+		goarch   string
+		url      string
+		fileName string
+	}{
+		{
+			goarch:   "amd64",
+			url:      webView2StandaloneX64URL,
+			fileName: "MicrosoftEdgeWebView2RuntimeInstallerX64.exe",
+		},
+		{
+			goarch:   "386",
+			url:      webView2StandaloneX86URL,
+			fileName: "MicrosoftEdgeWebView2RuntimeInstallerX86.exe",
+		},
+		{
+			goarch:   "arm64",
+			url:      webView2StandaloneARM64URL,
+			fileName: "MicrosoftEdgeWebView2RuntimeInstallerARM64.exe",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.goarch, func(t *testing.T) {
+			got, err := webView2StandaloneInstallerPackage(tt.goarch)
+			if err != nil {
+				t.Fatalf("webView2StandaloneInstallerPackage returned error: %v", err)
+			}
+			if got.URL != tt.url || got.FileName != tt.fileName {
+				t.Fatalf("unexpected package: %#v", got)
+			}
+		})
+	}
+}
+
+func TestCopyWithDownloadProgressReportsStartAndCompletion(t *testing.T) {
+	var dst bytes.Buffer
+	var progress []webView2DownloadProgress
+
+	err := copyWithDownloadProgress(&dst, bytes.NewBufferString("runtime"), 7, func(next webView2DownloadProgress) {
+		progress = append(progress, next)
+	})
+
+	if err != nil {
+		t.Fatalf("copyWithDownloadProgress returned error: %v", err)
+	}
+	if dst.String() != "runtime" {
+		t.Fatalf("unexpected copied content: %q", dst.String())
+	}
+	if len(progress) < 2 {
+		t.Fatalf("expected at least start and completion progress, got %d updates", len(progress))
+	}
+	if progress[0] != (webView2DownloadProgress{Downloaded: 0, Total: 7}) {
+		t.Fatalf("unexpected initial progress: %#v", progress[0])
+	}
+	last := progress[len(progress)-1]
+	if last != (webView2DownloadProgress{Downloaded: 7, Total: 7}) {
+		t.Fatalf("unexpected final progress: %#v", last)
 	}
 }
 

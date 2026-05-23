@@ -9,29 +9,148 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
+	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
-type windowsStartupUI struct{}
-
-func (windowsStartupUI) Status(message string) {
-	log.Printf("startup: %s", message)
+type windowsStartupUI struct {
+	mu            sync.Mutex
+	statusPath    string
+	statusScript  string
+	statusCommand *exec.Cmd
+	statusClosed  bool
 }
 
-func (windowsStartupUI) Notice(message string) {
+func (ui *windowsStartupUI) Status(message string) {
+	log.Printf("startup: %s", message)
+	ui.writeStatus(message, nil)
+}
+
+func (ui *windowsStartupUI) Progress(message string, progress webView2DownloadProgress) {
+	if progress.Total > 0 {
+		percent := progress.Downloaded * 100 / progress.Total
+		log.Printf("startup: %s: %d%% (%d/%d bytes)", message, percent, progress.Downloaded, progress.Total)
+	} else {
+		log.Printf("startup: %s: %d bytes", message, progress.Downloaded)
+	}
+	ui.writeStatus(message, &progress)
+}
+
+func (ui *windowsStartupUI) Notice(message string) {
 	log.Printf("startup notice: %s", message)
 	showMessageBox("Go Web Wallpaper", message)
 }
 
-func (windowsStartupUI) PromptURL(currentURL string, firstRun bool, webView2Version string) (string, bool, error) {
+func (ui *windowsStartupUI) PromptURL(currentURL string, firstRun bool, webView2Version string) (string, bool, error) {
+	ui.Close()
 	selected, err := runURLPromptPowerShell(currentURL, firstRun, webView2Version)
 	if err != nil {
 		showMessageBox("Go Web Wallpaper", "Unable to show startup URL dialog. The existing URL will be used.\n\n"+err.Error())
 		return currentURL, true, nil
 	}
 	return selected, true, nil
+}
+
+func (ui *windowsStartupUI) Close() {
+	ui.mu.Lock()
+	defer ui.mu.Unlock()
+	if ui.statusClosed {
+		return
+	}
+	ui.statusClosed = true
+	if ui.statusPath != "" {
+		_ = os.WriteFile(ui.statusPath, []byte("__CLOSE__"), 0644)
+	}
+	if ui.statusCommand != nil && ui.statusCommand.Process != nil {
+		done := make(chan struct{})
+		go func() {
+			_ = ui.statusCommand.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-timeAfterOneSecond():
+			_ = ui.statusCommand.Process.Kill()
+		}
+	}
+	if ui.statusPath != "" {
+		_ = os.Remove(ui.statusPath)
+	}
+	if ui.statusScript != "" {
+		_ = os.Remove(ui.statusScript)
+	}
+}
+
+func (ui *windowsStartupUI) writeStatus(message string, progress *webView2DownloadProgress) {
+	ui.mu.Lock()
+	defer ui.mu.Unlock()
+	if ui.statusClosed {
+		return
+	}
+	if err := ui.ensureStatusWindow(message, progress); err != nil {
+		log.Printf("startup progress window unavailable: %v", err)
+		return
+	}
+	if err := os.WriteFile(ui.statusPath, []byte(formatStartupStatus(message, progress)), 0644); err != nil {
+		log.Printf("startup progress update failed: %v", err)
+	}
+}
+
+func (ui *windowsStartupUI) ensureStatusWindow(message string, progress *webView2DownloadProgress) error {
+	if ui.statusPath != "" {
+		return nil
+	}
+	statusFile, err := os.CreateTemp("", "gowebwallpaper-status-*.txt")
+	if err != nil {
+		return err
+	}
+	ui.statusPath = statusFile.Name()
+	if _, err := statusFile.WriteString(formatStartupStatus(message, progress)); err != nil {
+		statusFile.Close()
+		return err
+	}
+	if err := statusFile.Close(); err != nil {
+		return err
+	}
+
+	scriptFile, err := os.CreateTemp("", "gowebwallpaper-status-*.ps1")
+	if err != nil {
+		return err
+	}
+	ui.statusScript = scriptFile.Name()
+	if _, err := scriptFile.WriteString(startupStatusWindowScript()); err != nil {
+		scriptFile.Close()
+		return err
+	}
+	if err := scriptFile.Close(); err != nil {
+		return err
+	}
+
+	command := exec.Command("powershell.exe", "-NoProfile", "-STA", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", ui.statusScript, ui.statusPath)
+	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	if err := command.Start(); err != nil {
+		return err
+	}
+	ui.statusCommand = command
+	return nil
+}
+
+func formatStartupStatus(message string, progress *webView2DownloadProgress) string {
+	downloaded := int64(-1)
+	total := int64(-1)
+	if progress != nil {
+		downloaded = progress.Downloaded
+		total = progress.Total
+	}
+	return fmt.Sprintf("%s\n%d\n%d\n", strings.ReplaceAll(message, "\n", " "), downloaded, total)
+}
+
+func timeAfterOneSecond() <-chan time.Time {
+	return time.After(time.Second)
 }
 
 func showMessageBox(title, message string) {
@@ -150,5 +269,93 @@ if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
 } else {
   [Console]::Out.Write($currentUrl)
 }
+`
+}
+
+func startupStatusWindowScript() string {
+	return `
+param([string]$StatusFile)
+
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+[System.Windows.Forms.Application]::EnableVisualStyles()
+
+$form = New-Object System.Windows.Forms.Form
+$form.Text = 'Go Web Wallpaper'
+$form.StartPosition = 'CenterScreen'
+$form.FormBorderStyle = 'FixedDialog'
+$form.MaximizeBox = $false
+$form.MinimizeBox = $false
+$form.ClientSize = New-Object System.Drawing.Size(520, 142)
+$form.TopMost = $true
+
+$label = New-Object System.Windows.Forms.Label
+$label.Location = New-Object System.Drawing.Point(16, 16)
+$label.Size = New-Object System.Drawing.Size(488, 36)
+$label.Text = 'Starting...'
+$form.Controls.Add($label)
+
+$progress = New-Object System.Windows.Forms.ProgressBar
+$progress.Location = New-Object System.Drawing.Point(16, 62)
+$progress.Size = New-Object System.Drawing.Size(488, 22)
+$progress.Minimum = 0
+$progress.Maximum = 100
+$progress.Style = [System.Windows.Forms.ProgressBarStyle]::Marquee
+$progress.MarqueeAnimationSpeed = 30
+$form.Controls.Add($progress)
+
+$detail = New-Object System.Windows.Forms.Label
+$detail.Location = New-Object System.Drawing.Point(16, 94)
+$detail.Size = New-Object System.Drawing.Size(488, 28)
+$detail.Text = ''
+$form.Controls.Add($detail)
+
+function Format-Size([Int64]$Bytes) {
+  if ($Bytes -lt 0) { return '' }
+  if ($Bytes -lt 1MB) { return "$([Math]::Round($Bytes / 1KB, 1)) KB" }
+  return "$([Math]::Round($Bytes / 1MB, 1)) MB"
+}
+
+function Update-Status {
+  if (!(Test-Path -LiteralPath $StatusFile)) { return }
+  $content = Get-Content -LiteralPath $StatusFile -Raw -ErrorAction SilentlyContinue
+  if ($null -eq $content) { return }
+  if ($content.Trim() -eq '__CLOSE__') {
+    $timer.Stop()
+    $form.Close()
+    return
+  }
+
+  $lines = $content -split "\r?\n"
+  if ($lines.Length -gt 0 -and $lines[0].Trim().Length -gt 0) {
+    $label.Text = $lines[0]
+  }
+
+  $downloaded = -1L
+  $total = -1L
+  if ($lines.Length -gt 1) { [void][Int64]::TryParse($lines[1], [ref]$downloaded) }
+  if ($lines.Length -gt 2) { [void][Int64]::TryParse($lines[2], [ref]$total) }
+
+  if ($total -gt 0 -and $downloaded -ge 0) {
+    $percent = [Math]::Min(100, [Math]::Max(0, [int](($downloaded * 100) / $total)))
+    $progress.Style = [System.Windows.Forms.ProgressBarStyle]::Continuous
+    $progress.Value = $percent
+    $detail.Text = "$percent%  ($(Format-Size $downloaded) / $(Format-Size $total))"
+  } else {
+    $progress.Style = [System.Windows.Forms.ProgressBarStyle]::Marquee
+    if ($downloaded -gt 0) {
+      $detail.Text = "$(Format-Size $downloaded)"
+    } else {
+      $detail.Text = 'Please wait...'
+    }
+  }
+}
+
+$timer = New-Object System.Windows.Forms.Timer
+$timer.Interval = 250
+$timer.Add_Tick({ Update-Status })
+$timer.Start()
+Update-Status
+[void]$form.ShowDialog()
 `
 }
