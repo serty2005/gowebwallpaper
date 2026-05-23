@@ -22,7 +22,7 @@ jobs:
         run: go mod download
 
       - name: Build binary
-        run: go build -o webwallpaper.exe .
+        run: go build -ldflags="-s -w -H windowsgui" -trimpath -o webwallpaper.exe .
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
