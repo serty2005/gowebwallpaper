@@ -27,6 +27,12 @@ func NewWallpaperController() *WallpaperController {
 	return &WallpaperController{}
 }
 
+func (c *WallpaperController) IsRunning() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.running
+}
+
 func (c *WallpaperController) Start() error {
 	c.mu.Lock()
 	if c.running {
@@ -98,8 +104,12 @@ func (c *WallpaperController) SetMonitor(name string) error {
 	if err := saveConfig(config); err != nil {
 		return err
 	}
-	log.Printf("monitor saved, restarting: %s", name)
-	return c.Restart()
+	if shouldRestartAfterConfigChange(c.IsRunning()) {
+		log.Printf("monitor saved, restarting: %s", name)
+		return c.Restart()
+	}
+	log.Printf("monitor saved while stopped: %s", name)
+	return nil
 }
 
 func (c *WallpaperController) SetAudio(device AudioDevice) error {
@@ -116,8 +126,12 @@ func (c *WallpaperController) SetAudio(device AudioDevice) error {
 	if err := saveConfig(config); err != nil {
 		return err
 	}
-	log.Printf("audio saved, restarting: active=%t name=%q id=%q", config.Audio.Active, config.Audio.Name, config.Audio.ID)
-	return c.Restart()
+	if shouldRestartAfterConfigChange(c.IsRunning()) {
+		log.Printf("audio saved, restarting: active=%t name=%q id=%q", config.Audio.Active, config.Audio.Name, config.Audio.ID)
+		return c.Restart()
+	}
+	log.Printf("audio saved while stopped: active=%t name=%q id=%q", config.Audio.Active, config.Audio.Name, config.Audio.ID)
+	return nil
 }
 
 func (c *WallpaperController) runWebView(ctx context.Context, started chan<- error) {

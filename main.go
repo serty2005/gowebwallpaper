@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -15,29 +16,31 @@ func main() {
 	defer closeFileLogging()
 	log.Printf("application starting")
 
-	exists, err := configExists()
+	autoStart, err := runStartupFlow()
 	if err != nil {
-		log.Fatalf("config check failed: %v", err)
-	}
-	if !exists {
-		if err := performDiagnosticRun(); err != nil {
-			log.Fatalf("diagnostic run failed: %v", err)
+		if errors.Is(err, errRestarting) {
+			log.Printf("application restart requested after startup flow")
+			return
 		}
+		log.Fatalf("startup flow failed: %v", err)
 	}
-	runTrayApplication()
+	runTrayApplication(autoStart)
 }
 
-func runTrayApplication() {
-	systray.Run(onTrayReady, func() {})
+func runTrayApplication(autoStart bool) {
+	systray.Run(func() {
+		onTrayReady(autoStart)
+	}, func() {})
 }
 
-func onTrayReady() {
+func onTrayReady(autoStart bool) {
 	log.Printf("tray ready")
+	systray.SetIcon(trayIconBytes())
 	systray.SetTitle("Go Web Wallpaper")
 	systray.SetTooltip("Go Web Wallpaper")
 
 	controller := NewWallpaperController()
-	startItem := systray.AddMenuItem("Start / Restart", "Start or restart the topmost web window")
+	startItem := systray.AddMenuItemCheckbox("Start", "Start or stop the topmost web window", false)
 
 	systray.AddSeparator()
 	monitorMenu := systray.AddMenuItem("Monitor", "Select target monitor")
@@ -49,19 +52,33 @@ func onTrayReady() {
 	systray.AddSeparator()
 	exitItem := systray.AddMenuItem("Exit", "Exit")
 
-	go func() {
-		log.Printf("auto start requested")
-		if err := controller.Start(); err != nil {
-			log.Printf("start failed: %v", err)
-		}
-	}()
+	if autoStart {
+		go func() {
+			log.Printf("auto start requested")
+			if err := controller.Start(); err != nil {
+				log.Printf("start failed: %v", err)
+				startItem.Uncheck()
+				return
+			}
+			startItem.Check()
+		}()
+	}
 
 	go func() {
 		for range startItem.ClickedCh {
-			log.Printf("tray restart requested")
-			if err := controller.Restart(); err != nil {
-				log.Printf("restart failed: %v", err)
+			if controller.IsRunning() {
+				log.Printf("tray stop requested")
+				controller.Stop()
+				startItem.Uncheck()
+				continue
 			}
+			log.Printf("tray start requested")
+			if err := controller.Start(); err != nil {
+				log.Printf("start failed: %v", err)
+				startItem.Uncheck()
+				continue
+			}
+			startItem.Check()
 		}
 	}()
 
