@@ -63,6 +63,7 @@ func onTrayReady(autoStart bool) {
 
 	controller := NewWallpaperController()
 	startItem := systray.AddMenuItemCheckbox("Start", "Start or stop the topmost web window", false)
+	urlItem := systray.AddMenuItem("URL", "Set web page URL")
 
 	systray.AddSeparator()
 	monitorMenu := systray.AddMenuItem("Monitor", "Select target monitor")
@@ -113,6 +114,25 @@ func onTrayReady(autoStart bool) {
 		}
 	}()
 
+	go func() {
+		defer recoverAndLogPanic("url menu goroutine")
+		for range urlItem.ClickedCh {
+			config, err := loadConfig()
+			if err != nil {
+				log.Printf("load config for URL prompt failed: %v", err)
+				continue
+			}
+			selected, err := runURLPromptPowerShell(config.URL, false, "")
+			if err != nil {
+				log.Printf("URL prompt failed: %v", err)
+				continue
+			}
+			if err := controller.SetURL(selected); err != nil {
+				log.Printf("URL update failed: %v", err)
+			}
+		}
+	}()
+
 	for _, entry := range monitorItems {
 		entry := entry
 		go func() {
@@ -122,7 +142,9 @@ func onTrayReady(autoStart bool) {
 				checkOnly(entry.item, collectMonitorMenuItems(monitorItems))
 				if err := controller.SetMonitor(entry.name); err != nil {
 					log.Printf("monitor switch failed: %v", err)
+					continue
 				}
+				hideDisconnectedMonitorItems(monitorItems)
 			}
 		}()
 	}
@@ -197,13 +219,21 @@ func refreshAutostartMenuItem(item *systray.MenuItem) {
 }
 
 type monitorMenuEntry struct {
-	name string
-	item *systray.MenuItem
+	name    string
+	item    *systray.MenuItem
+	enabled bool
 }
 
 type audioMenuEntry struct {
 	device AudioDevice
 	item   *systray.MenuItem
+}
+
+type monitorMenuOption struct {
+	Monitor MonitorConfig
+	Title   string
+	Checked bool
+	Enabled bool
 }
 
 func buildMonitorMenu(parent *systray.MenuItem, controller *WallpaperController) []monitorMenuEntry {
@@ -212,24 +242,71 @@ func buildMonitorMenu(parent *systray.MenuItem, controller *WallpaperController)
 	if err != nil {
 		log.Printf("load config for monitor menu: %v", err)
 	}
-	active, _ := activeMonitor(config)
 	connected := getMonitors()
-	if config != nil {
-		replaceConfigMonitors(config, connected, active.Name)
+	options, activeConnectedName := buildMonitorMenuOptions(config, connected)
+	if config != nil && activeConnectedName != "" {
+		replaceConfigMonitors(config, connected, activeConnectedName)
 		_ = saveConfig(config)
 	}
-	log.Printf("building monitor menu: connected=%d active=%s", len(connected), active.Name)
+	log.Printf("building monitor menu: connected=%d active=%s", len(connected), activeConnectedName)
 
-	entries := make([]monitorMenuEntry, 0, len(connected))
-	for _, monitor := range connected {
-		title := fmt.Sprintf("%s (%dx%d @ %d,%d)", monitor.Name, monitor.Width, monitor.Height, monitor.PositionX, monitor.PositionY)
-		if monitor.IsPrimary {
-			title += " [primary]"
+	entries := make([]monitorMenuEntry, 0, len(options))
+	for _, option := range options {
+		item := parent.AddSubMenuItemCheckbox(option.Title, "Use this monitor", option.Checked)
+		if !option.Enabled {
+			item.Disable()
 		}
-		item := parent.AddSubMenuItemCheckbox(title, "Use this monitor", monitor.Name == active.Name)
-		entries = append(entries, monitorMenuEntry{name: monitor.Name, item: item})
+		entries = append(entries, monitorMenuEntry{name: option.Monitor.Name, item: item, enabled: option.Enabled})
 	}
 	return entries
+}
+
+func buildMonitorMenuOptions(config *AppConfig, connected []MonitorConfig) ([]monitorMenuOption, string) {
+	active, hasActive := activeMonitor(config)
+	activeConnectedName := ""
+	if hasActive {
+		if resolved, ok := FindBestMonitor(active, connected); ok {
+			activeConnectedName = resolved.Name
+		}
+	}
+
+	options := make([]monitorMenuOption, 0, len(connected)+1)
+	for _, monitor := range connected {
+		options = append(options, monitorMenuOption{
+			Monitor: monitor,
+			Title:   formatMonitorMenuTitle(monitor, false),
+			Checked: monitor.Name == activeConnectedName,
+			Enabled: true,
+		})
+	}
+	if hasActive && activeConnectedName == "" {
+		options = append(options, monitorMenuOption{
+			Monitor: active,
+			Title:   formatMonitorMenuTitle(active, true),
+			Checked: true,
+			Enabled: false,
+		})
+	}
+	return options, activeConnectedName
+}
+
+func formatMonitorMenuTitle(monitor MonitorConfig, disconnected bool) string {
+	title := fmt.Sprintf("%s (%dx%d @ %d,%d)", monitor.Name, monitor.Width, monitor.Height, monitor.PositionX, monitor.PositionY)
+	if monitor.IsPrimary {
+		title += " [primary]"
+	}
+	if disconnected {
+		title += " [disconnected]"
+	}
+	return title
+}
+
+func hideDisconnectedMonitorItems(entries []monitorMenuEntry) {
+	for _, entry := range entries {
+		if !entry.enabled {
+			entry.item.Hide()
+		}
+	}
 }
 
 func buildAudioMenu(parent *systray.MenuItem, controller *WallpaperController) []audioMenuEntry {

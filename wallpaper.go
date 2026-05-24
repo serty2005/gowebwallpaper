@@ -120,6 +120,27 @@ func (c *WallpaperController) SetMonitor(name string) error {
 	return nil
 }
 
+func (c *WallpaperController) SetURL(url string) error {
+	log.Printf("set URL requested")
+	config, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	if !setConfigURL(config, url) {
+		log.Printf("URL unchanged")
+		return nil
+	}
+	if err := saveConfig(config); err != nil {
+		return err
+	}
+	if shouldRestartAfterConfigChange(c.IsRunning()) {
+		log.Printf("URL saved, restarting")
+		return c.Restart()
+	}
+	log.Printf("URL saved while stopped")
+	return nil
+}
+
 func (c *WallpaperController) SetAudio(device AudioDevice) error {
 	log.Printf("set audio requested: name=%q id=%q", device.Name, device.ID)
 	config, err := loadConfig()

@@ -186,7 +186,8 @@ func runURLPromptPowerShell(currentURL string, firstRun bool, webView2Version st
 		return "", err
 	}
 
-	command := exec.Command("powershell.exe", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
+	command := exec.Command("powershell.exe", "-NoProfile", "-STA", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
+	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	firstRunValue := "0"
 	if firstRun {
 		firstRunValue = "1"
@@ -230,8 +231,10 @@ $status.Location = New-Object System.Drawing.Point(16, 14)
 $status.Size = New-Object System.Drawing.Size(528, 54)
 if ($firstRun) {
   $status.Text = "First start: config was created. Set the page URL here, then use tray Start when ready."
-} else {
+} elseif (![string]::IsNullOrWhiteSpace($webView2Version)) {
   $status.Text = "Startup check complete. WebView2: $webView2Version. Confirm the page URL before the browser starts."
+} else {
+  $status.Text = "Set the web page URL. The browser window will restart if it is currently running."
 }
 $form.Controls.Add($status)
 

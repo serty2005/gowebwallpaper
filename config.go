@@ -179,6 +179,18 @@ func replaceConfigMonitors(config *AppConfig, connected []MonitorConfig, activeN
 	}
 }
 
+func setConfigURL(config *AppConfig, url string) bool {
+	if config == nil {
+		return false
+	}
+	next := strings.TrimSpace(url)
+	if next == "" || next == config.URL {
+		return false
+	}
+	config.URL = next
+	return true
+}
+
 func setActiveMonitor(monitorName string) error {
 	config, err := loadConfig()
 	if err != nil {
