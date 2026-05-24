@@ -36,6 +36,7 @@ type startupDeps struct {
 	performDiagnosticRun func() error
 	loadConfig           func() (*AppConfig, error)
 	saveConfig           func(*AppConfig) error
+	ensureSelfUpdate     func(startupUI) error
 	ensureWebView2       func(startupUI) (string, error)
 }
 
@@ -48,6 +49,9 @@ func runStartupFlow() (bool, error) {
 		performDiagnosticRun: performDiagnosticRun,
 		loadConfig:           loadConfig,
 		saveConfig:           saveConfig,
+		ensureSelfUpdate: func(ui startupUI) error {
+			return ensureSelfUpdate(defaultSelfUpdateDeps(), ui)
+		},
 		ensureWebView2: func(ui startupUI) (string, error) {
 			return ensureWebView2Runtime(defaultWebView2RuntimeDeps(), ui)
 		},
@@ -57,6 +61,20 @@ func runStartupFlow() (bool, error) {
 func prepareStartup(deps startupDeps) (bool, error) {
 	if deps.ui == nil {
 		deps.ui = logOnlyStartupUI{}
+	}
+	if deps.ensureSelfUpdate == nil {
+		deps.ensureSelfUpdate = func(startupUI) error {
+			return nil
+		}
+	}
+
+	deps.ui.Status("Checking for application updates")
+	if err := deps.ensureSelfUpdate(deps.ui); err != nil {
+		if errors.Is(err, errRestarting) {
+			return false, err
+		}
+		log.Printf("startup update check skipped: %v", err)
+		deps.ui.Status("Application update check skipped")
 	}
 
 	deps.ui.Status("Checking WebView2 runtime")

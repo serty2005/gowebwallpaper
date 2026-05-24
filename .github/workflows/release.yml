@@ -56,41 +56,64 @@ jobs:
       - name: Build binary
         if: steps.version.outputs.release == 'true'
         shell: pwsh
-        run: go build -ldflags="-s -w -H windowsgui" -trimpath -o "${{ steps.version.outputs.asset }}" .
+        run: |
+          $ldflags = "-s -w -H windowsgui -X main.appVersion=${{ steps.version.outputs.version }} -X main.appGitHubRepository=${{ github.repository }}"
+          go build -ldflags="$ldflags" -trimpath -o "${{ steps.version.outputs.asset }}" .
 
-      - name: Create and push release tag
+      - name: Create and push release tags
         if: steps.version.outputs.release == 'true'
         shell: pwsh
         env:
           TAG_NAME: ${{ steps.version.outputs.tag }}
+          LATEST_TAG_NAME: latest
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           git fetch --tags
+          $pushVersionTag = $true
           $existing = git rev-list -n 1 "refs/tags/$env:TAG_NAME" 2>$null
           if ($LASTEXITCODE -eq 0) {
             if ($existing -ne $env:GITHUB_SHA) {
               throw "Tag $env:TAG_NAME already exists at $existing, current commit is $env:GITHUB_SHA"
             }
             Write-Host "Tag $env:TAG_NAME already points to this commit"
-            exit 0
+            $pushVersionTag = $false
+          } else {
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag "$env:TAG_NAME" "$env:GITHUB_SHA"
           }
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag "$env:TAG_NAME" "$env:GITHUB_SHA"
 
           if ($env:GH_PAT) {
             git remote set-url origin "https://x-access-token:$env:GH_PAT@github.com/${{ github.repository }}.git"
           }
-          git push origin "$env:TAG_NAME"
+          if ($pushVersionTag) {
+            git push origin "$env:TAG_NAME"
+          }
 
-      - name: Create GitHub Release
+          git tag -f "$env:LATEST_TAG_NAME" "$env:GITHUB_SHA"
+          git push origin "refs/tags/$env:LATEST_TAG_NAME" --force
+
+      - name: Create versioned GitHub Release
         if: steps.version.outputs.release == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           target_commitish: ${{ github.sha }}
           name: Release ${{ steps.version.outputs.version }}
+          make_latest: false
+          files: ./${{ steps.version.outputs.asset }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT || github.token }}
+
+      - name: Create latest GitHub Release
+        if: steps.version.outputs.release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          target_commitish: ${{ github.sha }}
+          name: latest
+          make_latest: true
+          overwrite_files: true
           files: ./${{ steps.version.outputs.asset }}
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT || github.token }}

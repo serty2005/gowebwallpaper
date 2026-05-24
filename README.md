@@ -5,6 +5,7 @@ Go Web Wallpaper keeps a WebView2 page in a strict borderless fullscreen window 
 ## Current Behavior
 
 - Runs on Windows 10/11.
+- Checks GitHub Releases tag `latest` on startup for a newer `webwallpaper-X.Y.Z.exe` asset. Release builds download the newer binary, replace the current executable after exit, and restart.
 - Checks for Microsoft Edge WebView2 Runtime on startup. If it is missing, the app downloads the full Evergreen Standalone Installer from Microsoft with visible progress, installs it silently, and restarts itself.
 - Shows a minimal startup dialog where you can confirm or change the web page URL.
 - Creates a local `config.json` on first start, but does not open the browser window until you click `Start` in the tray.
@@ -41,6 +42,8 @@ go build -ldflags="-H windowsgui" -o gowebwallpaper.exe .
 On first run the app scans connected monitors and creates `config.json` next to the executable. During development it uses the repository `config.json` when that file already exists.
 
 If WebView2 Runtime is not installed, the app shows a Windows message, downloads Microsoft's Evergreen Standalone Installer with a progress window, installs it, and restarts. After the startup check, a small URL dialog opens. Existing configs auto-start after the dialog; first-run configs stay stopped so you can choose Monitor and Audio output from the tray before pressing `Start`.
+
+Release builds self-update from `https://api.github.com/repos/<owner>/<repo>/releases/tags/latest`. Development builds use `appVersion=dev` and skip the update check.
 
 ## Logs
 

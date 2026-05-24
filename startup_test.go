@@ -64,6 +64,9 @@ func TestStartupFlowCreatesConfigPromptsURLAndDoesNotAutoStartOnFirstRun(t *test
 			config = next
 			return nil
 		},
+		ensureSelfUpdate: func(startupUI) error {
+			return nil
+		},
 		ensureWebView2: func(startupUI) (string, error) {
 			return "123.0.0.0", nil
 		},
@@ -115,6 +118,9 @@ func TestStartupFlowExistingConfigSkipsURLPromptAndAutoStarts(t *testing.T) {
 			config = next
 			return nil
 		},
+		ensureSelfUpdate: func(startupUI) error {
+			return nil
+		},
 		ensureWebView2: func(startupUI) (string, error) {
 			return "123.0.0.0", nil
 		},
@@ -137,6 +143,45 @@ func TestStartupFlowExistingConfigSkipsURLPromptAndAutoStarts(t *testing.T) {
 	}
 	if config.URL != "http://old.test" {
 		t.Fatalf("expected existing URL to stay unchanged, got %q", config.URL)
+	}
+}
+
+func TestStartupFlowRestartsWhenSelfUpdateInstallsUpdate(t *testing.T) {
+	ui := &fakeStartupUI{}
+	webViewChecked := false
+
+	_, err := prepareStartup(startupDeps{
+		ui: ui,
+		configExists: func() (bool, error) {
+			t.Fatal("did not expect config check after update restart")
+			return false, nil
+		},
+		performDiagnosticRun: func() error {
+			t.Fatal("did not expect diagnostic run after update restart")
+			return nil
+		},
+		loadConfig: func() (*AppConfig, error) {
+			t.Fatal("did not expect config load after update restart")
+			return nil, nil
+		},
+		saveConfig: func(*AppConfig) error {
+			t.Fatal("did not expect config save after update restart")
+			return nil
+		},
+		ensureSelfUpdate: func(startupUI) error {
+			return errRestarting
+		},
+		ensureWebView2: func(startupUI) (string, error) {
+			webViewChecked = true
+			return "123.0.0.0", nil
+		},
+	})
+
+	if !errors.Is(err, errRestarting) {
+		t.Fatalf("expected errRestarting, got %v", err)
+	}
+	if webViewChecked {
+		t.Fatal("did not expect WebView2 check after update restart")
 	}
 }
 
