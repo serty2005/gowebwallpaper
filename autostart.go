@@ -36,9 +36,12 @@ func defaultAutostartDeps() autostartDeps {
 	return autostartDeps{
 		executable: os.Executable,
 		run: func(name string, args ...string) ([]byte, error) {
+			debugLogf("autostart command input name=%q args=%q", name, args)
 			command := exec.Command(name, args...)
 			command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-			return command.CombinedOutput()
+			output, err := command.CombinedOutput()
+			debugLogf("autostart command output name=%q error=%v output=%q", name, err, strings.TrimSpace(string(output)))
+			return output, err
 		},
 	}
 }

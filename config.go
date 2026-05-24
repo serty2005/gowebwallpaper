@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const defaultURL = "http://localhost:3100/#/columns-fullscreen"
@@ -31,6 +32,7 @@ type AppConfig struct {
 	URL      string          `json:"URL"`
 	Monitors []MonitorConfig `json:"Monitors"`
 	Audio    AudioConfig     `json:"Audio"`
+	Log      string          `json:"log,omitempty"`
 }
 
 func getConfigPath() (string, error) {
@@ -70,15 +72,19 @@ func loadConfig() (*AppConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	debugLogf("loadConfig input path=%q", path)
 	file, err := os.ReadFile(path)
 	if err != nil {
+		debugLogf("loadConfig output error=%v", err)
 		return nil, err
 	}
 	var config AppConfig
 	if err := json.Unmarshal(file, &config); err != nil {
+		debugLogf("loadConfig output error=%v bytes=%d", err, len(file))
 		return nil, err
 	}
 	normalizeConfig(&config)
+	debugLogf("loadConfig output url=%q monitors=%d audioActive=%t log=%q", config.URL, len(config.Monitors), config.Audio.Active, config.Log)
 	return &config, nil
 }
 
@@ -86,24 +92,37 @@ func saveConfig(config *AppConfig) error {
 	if config == nil {
 		return errors.New("config is nil")
 	}
+	debugLogf("saveConfig input url=%q monitors=%d audioActive=%t log=%q", config.URL, len(config.Monitors), config.Audio.Active, config.Log)
 	normalizeConfig(config)
 	path, err := getConfigPath()
 	if err != nil {
+		debugLogf("saveConfig output error=%v", err)
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		debugLogf("saveConfig output error=%v path=%q", err, path)
 		return err
 	}
 	file, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
+		debugLogf("saveConfig output error=%v", err)
 		return err
 	}
-	return os.WriteFile(path, file, 0644)
+	if err := os.WriteFile(path, file, 0644); err != nil {
+		debugLogf("saveConfig output error=%v path=%q bytes=%d", err, path, len(file))
+		return err
+	}
+	debugLogf("saveConfig output path=%q bytes=%d", path, len(file))
+	return nil
 }
 
 func normalizeConfig(config *AppConfig) {
 	if config.URL == "" {
 		config.URL = defaultURL
+	}
+	config.Log = strings.ToLower(strings.TrimSpace(config.Log))
+	if config.Log != logLevelDebug {
+		config.Log = ""
 	}
 	activeSeen := false
 	for i := range config.Monitors {

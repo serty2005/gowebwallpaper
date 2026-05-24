@@ -34,6 +34,7 @@ func (c *WallpaperController) IsRunning() bool {
 }
 
 func (c *WallpaperController) Start() error {
+	debugLogf("WallpaperController.Start input")
 	c.mu.Lock()
 	if c.running {
 		log.Printf("start ignored: wallpaper already running")
@@ -58,13 +59,16 @@ func (c *WallpaperController) Start() error {
 		c.hwnd = 0
 		c.mu.Unlock()
 		log.Printf("wallpaper start failed: %v", err)
+		debugLogf("WallpaperController.Start output error=%v", err)
 		return err
 	}
 	log.Printf("wallpaper started")
+	debugLogf("WallpaperController.Start output running=true")
 	return nil
 }
 
 func (c *WallpaperController) Stop() {
+	debugLogf("WallpaperController.Stop input")
 	c.mu.Lock()
 	w := c.webview
 	cancel := c.cancel
@@ -80,9 +84,13 @@ func (c *WallpaperController) Stop() {
 	}
 	if w != nil {
 		w.Dispatch(func() {
+			defer recoverAndLogPanic("webview destroy dispatch")
+			debugLogf("WallpaperController.Stop dispatch Destroy input")
 			w.Destroy()
+			debugLogf("WallpaperController.Stop dispatch Destroy output")
 		})
 	}
+	debugLogf("WallpaperController.Stop output hadWindow=%t", w != nil)
 }
 
 func (c *WallpaperController) Restart() error {
@@ -135,13 +143,25 @@ func (c *WallpaperController) SetAudio(device AudioDevice) error {
 }
 
 func (c *WallpaperController) runWebView(ctx context.Context, started chan<- error) {
+	startedSent := false
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			logRecoveredPanic("webview goroutine", recovered)
+			if !startedSent {
+				started <- fmt.Errorf("webview goroutine panic: %v", recovered)
+			}
+		}
+	}()
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	runStartedAt := time.Now()
+	debugLogf("runWebView input")
 
 	config, err := loadConfig()
 	if err != nil {
 		log.Printf("load config before webview failed: %v", err)
 		started <- err
+		startedSent = true
 		return
 	}
 	if target, ok := activeMonitor(config); ok {
@@ -149,16 +169,104 @@ func (c *WallpaperController) runWebView(ctx context.Context, started chan<- err
 	} else {
 		log.Printf("webview target from config: none")
 	}
+	configureLoggingFromConfig(config)
+	debugLogf("runWebView config url=%q audioActive=%t log=%q", config.URL, config.Audio.Active, config.Log)
+	target, ok := activeMonitor(config)
+	if !ok {
+		err := fmt.Errorf("no active monitor in config")
+		log.Printf("target monitor wait failed: %v", err)
+		started <- err
+		startedSent = true
+		return
+	}
 	monitor, err := waitForTargetMonitor(ctx, config, 20*time.Second)
 	if err != nil {
 		log.Printf("target monitor wait failed: %v", err)
 		started <- err
+		startedSent = true
 		return
 	}
-	log.Printf("target monitor resolved: %s", formatMonitor(monitor))
+	log.Printf("target monitor resolved: target=%s connected=%s", formatMonitor(target), formatMonitor(monitor))
 
+	for {
+		w, hwnd, err := c.createWebViewWindow(config, monitor)
+		if err != nil {
+			if !startedSent {
+				started <- err
+				startedSent = true
+			} else {
+				log.Printf("webview resume failed: %v", err)
+				c.clearIdleCancel()
+			}
+			return
+		}
+
+		c.mu.Lock()
+		c.webview = w
+		c.hwnd = hwnd
+		c.running = true
+		c.mu.Unlock()
+
+		monitorMissing := make(chan struct{}, 1)
+		go c.enforceLoop(ctx, w, hwnd, target, monitorMissing)
+		if !startedSent {
+			started <- nil
+			startedSent = true
+		}
+
+		w.Run()
+		log.Printf("webview run loop exited after %s", time.Since(runStartedAt).Round(time.Second))
+		debugLogf("runWebView window output duration=%s", time.Since(runStartedAt))
+
+		c.mu.Lock()
+		if c.webview == w {
+			c.webview = nil
+			c.hwnd = 0
+			c.running = false
+		}
+		c.mu.Unlock()
+
+		if ctx.Err() != nil {
+			c.mu.Lock()
+			if c.webview == nil {
+				c.cancel = nil
+				c.running = false
+			}
+			c.mu.Unlock()
+			debugLogf("runWebView output cancelled duration=%s", time.Since(runStartedAt))
+			return
+		}
+
+		select {
+		case <-monitorMissing:
+			log.Printf("waiting for target monitor to return: %s", formatMonitor(target))
+			monitor, err = waitForTargetMonitor(ctx, &AppConfig{Monitors: []MonitorConfig{target}}, 24*time.Hour)
+			if err != nil {
+				log.Printf("target monitor wait after disappearance stopped: %v", err)
+				c.clearIdleCancel()
+				return
+			}
+			log.Printf("target monitor returned: %s", formatMonitor(monitor))
+		default:
+			log.Printf("webview exited without monitor disappearance; not restarting automatically")
+			c.clearIdleCancel()
+			return
+		}
+	}
+}
+
+func (c *WallpaperController) clearIdleCancel() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.webview == nil {
+		c.cancel = nil
+		c.running = false
+	}
+}
+
+func (c *WallpaperController) createWebViewWindow(config *AppConfig, monitor MonitorConfig) (webview2.WebView, windows.HWND, error) {
 	w := webview2.NewWithOptions(webview2.WebViewOptions{
-		Debug: false,
+		Debug: debugLoggingEnabled(),
 		WindowOptions: webview2.WindowOptions{
 			Title:  "Go Web Wallpaper",
 			Width:  uint(monitor.Width),
@@ -167,15 +275,15 @@ func (c *WallpaperController) runWebView(ctx context.Context, started chan<- err
 	})
 	if w == nil {
 		log.Printf("webview creation returned nil")
-		started <- fmt.Errorf("failed to create WebView2 window")
-		return
+		debugLogf("createWebViewWindow output error=webview nil")
+		return nil, 0, fmt.Errorf("failed to create WebView2 window")
 	}
+	debugLogf("webview created debug=%t", debugLoggingEnabled())
 
 	if err := w.Bind("goWebWallpaperAudioStatus", c.receiveAudioStatus); err != nil {
 		log.Printf("audio status bind failed: %v", err)
 		w.Destroy()
-		started <- err
-		return
+		return nil, 0, err
 	}
 	log.Printf("audio probe configured: active=%t name=%q id=%q", config.Audio.Active, config.Audio.Name, config.Audio.ID)
 	w.Init(buildAudioProbeScript(config.Audio))
@@ -186,43 +294,24 @@ func (c *WallpaperController) runWebView(ctx context.Context, started chan<- err
 	if err := makeWindowBorderless(hwnd); err != nil {
 		log.Printf("make window borderless failed: %v", err)
 		w.Destroy()
-		started <- err
-		return
+		return nil, 0, err
 	}
 	if err := forceWindowTopmost(hwnd, monitorBounds(monitor)); err != nil {
 		log.Printf("force topmost failed: %v", err)
 		w.Destroy()
-		started <- err
-		return
+		return nil, 0, err
 	}
 	log.Printf("window positioned topmost: hwnd=%v bounds=%+v", hwnd, monitorBounds(monitor))
+	debugLogf("window setup output hwnd=%v bounds=%+v", hwnd, monitorBounds(monitor))
 
 	w.Navigate(config.URL)
 	log.Printf("webview navigating: %s", config.URL)
-
-	c.mu.Lock()
-	c.webview = w
-	c.hwnd = hwnd
-	c.running = true
-	c.mu.Unlock()
-
-	go c.enforceLoop(ctx, w, hwnd)
-	started <- nil
-
-	w.Run()
-	log.Printf("webview run loop exited")
-
-	c.mu.Lock()
-	if c.webview == w {
-		c.webview = nil
-		c.hwnd = 0
-		c.cancel = nil
-		c.running = false
-	}
-	c.mu.Unlock()
+	debugLogf("webview Navigate input url=%q", config.URL)
+	return w, hwnd, nil
 }
 
 func waitForTargetMonitor(ctx context.Context, config *AppConfig, timeout time.Duration) (MonitorConfig, error) {
+	debugLogf("waitForTargetMonitor input timeout=%s", timeout)
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	tick := time.NewTicker(time.Second)
@@ -233,13 +322,22 @@ func waitForTargetMonitor(ctx context.Context, config *AppConfig, timeout time.D
 		attempt++
 		connected := getMonitors()
 		target, hasTarget := activeMonitor(config)
+		if shouldLogMonitorSearchAttempt(attempt) {
+			debugLogf("monitor search attempt=%d connected=%s hasTarget=%t target=%s", attempt, formatMonitors(connected), hasTarget, formatMonitor(target))
+		}
 		if !hasTarget {
-			log.Printf("monitor search attempt %d: no active monitor in config; connected=%s", attempt, formatMonitors(connected))
+			if shouldLogMonitorSearchAttempt(attempt) {
+				log.Printf("monitor search attempt %d: no active monitor in config; connected=%s", attempt, formatMonitors(connected))
+			}
 		} else if monitor, ok, reason := FindBestMonitorWithReason(target, connected); ok {
-			log.Printf("monitor search attempt %d: matched target=%s as=%s reason=%s", attempt, formatMonitor(target), formatMonitor(monitor), reason)
+			if shouldLogMonitorSearchAttempt(attempt) {
+				log.Printf("monitor search attempt %d: matched target=%s as=%s reason=%s", attempt, formatMonitor(target), formatMonitor(monitor), reason)
+			}
 			return monitor, nil
 		} else {
-			log.Printf("monitor search attempt %d: no match target=%s reason=%s connected=%s", attempt, formatMonitor(target), reason, formatMonitors(connected))
+			if shouldLogMonitorSearchAttempt(attempt) {
+				log.Printf("monitor search attempt %d: no match target=%s reason=%s connected=%s", attempt, formatMonitor(target), reason, formatMonitors(connected))
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -253,29 +351,45 @@ func waitForTargetMonitor(ctx context.Context, config *AppConfig, timeout time.D
 	}
 }
 
-func (c *WallpaperController) enforceLoop(ctx context.Context, w webview2.WebView, hwnd windows.HWND) {
+func shouldLogMonitorSearchAttempt(attempt int) bool {
+	return attempt == 1 || attempt%60 == 0
+}
+
+func (c *WallpaperController) enforceLoop(ctx context.Context, w webview2.WebView, hwnd windows.HWND, target MonitorConfig, monitorMissing chan<- struct{}) {
+	defer recoverAndLogPanic("enforce loop")
+	debugLogf("enforceLoop input hwnd=%v target=%s", hwnd, formatMonitor(target))
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
+	attempt := 0
 	for {
 		select {
 		case <-ctx.Done():
+			debugLogf("enforceLoop output cancelled error=%v attempts=%d", ctx.Err(), attempt)
 			return
 		case <-tick.C:
-			config, err := loadConfig()
-			if err != nil {
-				log.Printf("load config during enforcement: %v", err)
-				continue
-			}
-			monitor, ok := resolveTargetMonitor(config, getMonitors())
+			attempt++
+			connected := getMonitors()
+			monitor, ok, reason := resolveTargetMonitorSnapshot(target, connected)
 			if !ok {
-				log.Printf("target monitor disappeared")
-				continue
+				log.Printf("target monitor disappeared: target=%s reason=%s connected=%s", formatMonitor(target), reason, formatMonitors(connected))
+				select {
+				case monitorMissing <- struct{}{}:
+				default:
+				}
+				w.Dispatch(func() {
+					defer recoverAndLogPanic("monitor missing destroy dispatch")
+					w.Destroy()
+				})
+				return
 			}
 			desired := monitorBounds(monitor)
+			if attempt == 1 || attempt%60 == 0 {
+				debugLogf("enforceLoop heartbeat tick=%d desired=%+v matchReason=%s", attempt, desired, reason)
+			}
 			w.Dispatch(func() {
+				defer recoverAndLogPanic("enforce dispatch")
 				current, err := readWindowBounds(hwnd)
 				if err == nil && !windowNeedsRepair(current, desired) {
-					_ = forceWindowTopmost(hwnd, desired)
 					return
 				}
 				if err != nil {
@@ -295,6 +409,7 @@ func (c *WallpaperController) enforceLoop(ctx context.Context, w webview2.WebVie
 }
 
 func (c *WallpaperController) receiveAudioStatus(payload string) error {
+	debugLogf("receiveAudioStatus input payload=%s", payload)
 	c.mu.Lock()
 	c.lastAudioStatus = payload
 	c.mu.Unlock()
@@ -303,6 +418,7 @@ func (c *WallpaperController) receiveAudioStatus(payload string) error {
 		strings.Contains(payload, `"event":"sink-failed"`) {
 		log.Printf("audio status: %s", payload)
 	}
+	debugLogf("receiveAudioStatus output stored=true")
 	return nil
 }
 

@@ -101,6 +101,10 @@ func resolveTargetMonitor(config *AppConfig, connected []MonitorConfig) (Monitor
 	return FindBestMonitor(target, connected)
 }
 
+func resolveTargetMonitorSnapshot(target MonitorConfig, connected []MonitorConfig) (MonitorConfig, bool, string) {
+	return FindBestMonitorWithReason(target, connected)
+}
+
 func formatMonitor(monitor MonitorConfig) string {
 	return monitor.Name + " " +
 		fmt.Sprintf("%dx%d@%d,%d primary=%t active=%t", monitor.Width, monitor.Height, monitor.PositionX, monitor.PositionY, monitor.IsPrimary, monitor.Active)

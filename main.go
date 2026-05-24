@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"runtime"
+	"syscall"
 
 	"github.com/getlantern/systray"
 )
@@ -14,7 +17,10 @@ func main() {
 		_ = os.WriteFile(logFileName, []byte("failed to initialize file logging: "+err.Error()+"\n"), 0644)
 	}
 	defer closeFileLogging()
-	log.Printf("application starting")
+	defer recoverAndLogPanic("main")
+	log.Printf("application starting: pid=%d version=%s go=%s args=%q", os.Getpid(), appVersion, runtime.Version(), os.Args)
+	startSignalLogging()
+	configureLoggingFromConfigFile()
 
 	autoStart, err := runStartupFlow()
 	if err != nil {
@@ -25,12 +31,28 @@ func main() {
 		log.Fatalf("startup flow failed: %v", err)
 	}
 	runTrayApplication(autoStart)
+	log.Printf("tray application returned")
 }
 
 func runTrayApplication(autoStart bool) {
 	systray.Run(func() {
+		defer recoverAndLogPanic("systray ready")
 		onTrayReady(autoStart)
-	}, func() {})
+	}, func() {
+		defer recoverAndLogPanic("systray exit")
+		log.Printf("tray exit callback")
+	})
+}
+
+func startSignalLogging() {
+	signals := make(chan os.Signal, 4)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		defer recoverAndLogPanic("signal logger")
+		for signal := range signals {
+			log.Printf("process signal received: %v", signal)
+		}
+	}()
 }
 
 func onTrayReady(autoStart bool) {
@@ -51,13 +73,17 @@ func onTrayReady(autoStart bool) {
 
 	autostartMenu := systray.AddMenuItem("Autostart", "Start Go Web Wallpaper when Windows starts")
 	autostartEnabledItem := autostartMenu.AddSubMenuItemCheckbox("Enabled", "Enable or disable Windows logon startup", false)
-	go refreshAutostartMenuItem(autostartEnabledItem)
+	go func() {
+		defer recoverAndLogPanic("autostart refresh goroutine")
+		refreshAutostartMenuItem(autostartEnabledItem)
+	}()
 
 	systray.AddSeparator()
 	exitItem := systray.AddMenuItem("Exit", "Exit")
 
 	if autoStart {
 		go func() {
+			defer recoverAndLogPanic("auto start goroutine")
 			log.Printf("auto start requested")
 			if err := controller.Start(); err != nil {
 				log.Printf("start failed: %v", err)
@@ -69,6 +95,7 @@ func onTrayReady(autoStart bool) {
 	}
 
 	go func() {
+		defer recoverAndLogPanic("start menu goroutine")
 		for range startItem.ClickedCh {
 			if controller.IsRunning() {
 				log.Printf("tray stop requested")
@@ -89,6 +116,7 @@ func onTrayReady(autoStart bool) {
 	for _, entry := range monitorItems {
 		entry := entry
 		go func() {
+			defer recoverAndLogPanic("monitor menu goroutine")
 			for range entry.item.ClickedCh {
 				log.Printf("tray monitor selected: %s", entry.name)
 				checkOnly(entry.item, collectMonitorMenuItems(monitorItems))
@@ -102,6 +130,7 @@ func onTrayReady(autoStart bool) {
 	for _, entry := range audioItems {
 		entry := entry
 		go func() {
+			defer recoverAndLogPanic("audio menu goroutine")
 			for range entry.item.ClickedCh {
 				log.Printf("tray audio selected: name=%q id=%q", entry.device.Name, entry.device.ID)
 				checkOnly(entry.item, collectAudioMenuItems(audioItems))
@@ -113,6 +142,7 @@ func onTrayReady(autoStart bool) {
 	}
 
 	go func() {
+		defer recoverAndLogPanic("autostart menu goroutine")
 		for range autostartEnabledItem.ClickedCh {
 			wantEnabled := !autostartEnabledItem.Checked()
 			autostartEnabledItem.Disable()
@@ -133,12 +163,23 @@ func onTrayReady(autoStart bool) {
 	}()
 
 	go func() {
+		defer recoverAndLogPanic("exit menu goroutine")
 		<-exitItem.ClickedCh
 		log.Printf("exit requested")
 		controller.Stop()
 		systray.Quit()
 		os.Exit(0)
 	}()
+}
+
+func configureLoggingFromConfigFile() {
+	config, err := loadConfig()
+	if err != nil {
+		log.Printf("debug logging config preload skipped: %v", err)
+		return
+	}
+	configureLoggingFromConfig(config)
+	debugLogf("debug logging config preload output log=%q", config.Log)
 }
 
 func refreshAutostartMenuItem(item *systray.MenuItem) {

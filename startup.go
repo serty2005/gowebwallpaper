@@ -98,6 +98,8 @@ func prepareStartup(deps startupDeps) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("load config failed: %w", err)
 	}
+	configureLoggingFromConfig(config)
+	debugLogf("prepareStartup config loaded existed=%t url=%q log=%q webView2=%q", existed, config.URL, config.Log, webView2Version)
 
 	firstRun := !existed
 	if firstRun {

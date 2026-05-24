@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"os/exec"
 	"strings"
 )
@@ -37,11 +38,17 @@ func SelectedAudioDevice(config *AppConfig) AudioConfig {
 }
 
 func ListAudioDevices() []AudioDevice {
-	out, err := exec.Command("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", audioDevicePowerShellCommand()).Output()
+	commandText := audioDevicePowerShellCommand()
+	debugLogf("ListAudioDevices input command=%q", commandText)
+	out, err := exec.Command("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", commandText).CombinedOutput()
 	if err != nil {
+		log.Printf("audio device query failed: %v", err)
+		debugLogf("ListAudioDevices output error=%v raw=%q", err, string(out))
 		return nil
 	}
-	return parsePowerShellAudioDevices(string(out))
+	devices := parsePowerShellAudioDevices(string(out))
+	debugLogf("ListAudioDevices output devices=%d raw=%q", len(devices), string(out))
+	return devices
 }
 
 func audioDevicePowerShellCommand() string {
