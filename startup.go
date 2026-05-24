@@ -82,14 +82,16 @@ func prepareStartup(deps startupDeps) (bool, error) {
 	}
 
 	firstRun := !existed
-	requestedURL, ok, err := deps.ui.PromptURL(config.URL, firstRun, webView2Version)
-	if err != nil {
-		return false, fmt.Errorf("startup URL prompt failed: %w", err)
-	}
-	if ok {
-		config.URL = normalizeStartupURL(requestedURL, config.URL)
-		if err := deps.saveConfig(config); err != nil {
-			return false, fmt.Errorf("save config failed: %w", err)
+	if firstRun {
+		requestedURL, ok, err := deps.ui.PromptURL(config.URL, firstRun, webView2Version)
+		if err != nil {
+			return false, fmt.Errorf("startup URL prompt failed: %w", err)
+		}
+		if ok {
+			config.URL = normalizeStartupURL(requestedURL, config.URL)
+			if err := deps.saveConfig(config); err != nil {
+				return false, fmt.Errorf("save config failed: %w", err)
+			}
 		}
 	}
 

@@ -7,11 +7,13 @@ import (
 )
 
 type fakeStartupUI struct {
-	statuses  []string
-	notices   []string
-	progress  []webView2DownloadProgress
-	promptURL string
-	promptOK  bool
+	statuses        []string
+	notices         []string
+	progress        []webView2DownloadProgress
+	promptURL       string
+	promptOK        bool
+	promptCalls     int
+	promptFirstRuns []bool
 }
 
 func (ui *fakeStartupUI) Status(message string) {
@@ -28,6 +30,8 @@ func (ui *fakeStartupUI) Progress(message string, progress webView2DownloadProgr
 }
 
 func (ui *fakeStartupUI) PromptURL(currentURL string, firstRun bool, webView2Version string) (string, bool, error) {
+	ui.promptCalls++
+	ui.promptFirstRuns = append(ui.promptFirstRuns, firstRun)
 	if ui.promptURL == "" {
 		return currentURL, ui.promptOK, nil
 	}
@@ -77,15 +81,22 @@ func TestStartupFlowCreatesConfigPromptsURLAndDoesNotAutoStartOnFirstRun(t *test
 	if !savedConfig {
 		t.Fatal("expected prompted URL to be saved")
 	}
+	if ui.promptCalls != 1 {
+		t.Fatalf("expected URL prompt once on first run, got %d", ui.promptCalls)
+	}
+	if len(ui.promptFirstRuns) != 1 || !ui.promptFirstRuns[0] {
+		t.Fatalf("expected first-run flag in URL prompt, got %#v", ui.promptFirstRuns)
+	}
 	if config.URL != "https://example.test/wallpaper" {
 		t.Fatalf("expected trimmed prompted URL, got %q", config.URL)
 	}
 }
 
-func TestStartupFlowExistingConfigSavesPromptedURLAndAutoStarts(t *testing.T) {
+func TestStartupFlowExistingConfigSkipsURLPromptAndAutoStarts(t *testing.T) {
 	ui := &fakeStartupUI{promptURL: "https://example.test/live", promptOK: true}
 	config := &AppConfig{URL: "http://old.test"}
 	createdConfig := false
+	savedConfig := false
 
 	autoStart, err := prepareStartup(startupDeps{
 		ui: ui,
@@ -100,6 +111,7 @@ func TestStartupFlowExistingConfigSavesPromptedURLAndAutoStarts(t *testing.T) {
 			return config, nil
 		},
 		saveConfig: func(next *AppConfig) error {
+			savedConfig = true
 			config = next
 			return nil
 		},
@@ -117,8 +129,14 @@ func TestStartupFlowExistingConfigSavesPromptedURLAndAutoStarts(t *testing.T) {
 	if createdConfig {
 		t.Fatal("did not expect diagnostic config creation for existing config")
 	}
-	if config.URL != "https://example.test/live" {
-		t.Fatalf("expected prompted URL to be saved, got %q", config.URL)
+	if ui.promptCalls != 0 {
+		t.Fatalf("did not expect URL prompt for existing config, got %d calls", ui.promptCalls)
+	}
+	if savedConfig {
+		t.Fatal("did not expect config save when URL prompt is skipped")
+	}
+	if config.URL != "http://old.test" {
+		t.Fatalf("expected existing URL to stay unchanged, got %q", config.URL)
 	}
 }
 

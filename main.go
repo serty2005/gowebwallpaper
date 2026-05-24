@@ -49,6 +49,10 @@ func onTrayReady(autoStart bool) {
 	audioMenu := systray.AddMenuItem("Audio output", "Select audio output")
 	audioItems := buildAudioMenu(audioMenu, controller)
 
+	autostartMenu := systray.AddMenuItem("Autostart", "Start Go Web Wallpaper when Windows starts")
+	autostartEnabledItem := autostartMenu.AddSubMenuItemCheckbox("Enabled", "Enable or disable Windows logon startup", false)
+	go refreshAutostartMenuItem(autostartEnabledItem)
+
 	systray.AddSeparator()
 	exitItem := systray.AddMenuItem("Exit", "Exit")
 
@@ -109,12 +113,46 @@ func onTrayReady(autoStart bool) {
 	}
 
 	go func() {
+		for range autostartEnabledItem.ClickedCh {
+			wantEnabled := !autostartEnabledItem.Checked()
+			autostartEnabledItem.Disable()
+			var err error
+			if wantEnabled {
+				log.Printf("autostart enable requested")
+				err = EnableAutostart()
+			} else {
+				log.Printf("autostart disable requested")
+				err = DisableAutostart()
+			}
+			if err != nil {
+				log.Printf("autostart update failed: %v", err)
+			}
+			refreshAutostartMenuItem(autostartEnabledItem)
+			autostartEnabledItem.Enable()
+		}
+	}()
+
+	go func() {
 		<-exitItem.ClickedCh
 		log.Printf("exit requested")
 		controller.Stop()
 		systray.Quit()
 		os.Exit(0)
 	}()
+}
+
+func refreshAutostartMenuItem(item *systray.MenuItem) {
+	enabled, err := AutostartEnabled()
+	if err != nil {
+		log.Printf("autostart check failed: %v", err)
+		item.Uncheck()
+		return
+	}
+	if enabled {
+		item.Check()
+		return
+	}
+	item.Uncheck()
 }
 
 type monitorMenuEntry struct {
