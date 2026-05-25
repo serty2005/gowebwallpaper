@@ -15,8 +15,6 @@ import (
 	"time"
 )
 
-const selfUpdateReleaseTag = "latest"
-
 var appVersion = "dev"
 var appGitHubRepository = "serty2005/gowebwallpaper"
 
@@ -76,7 +74,7 @@ func ensureSelfUpdate(deps selfUpdateDeps, ui startupUI) error {
 
 	release, err := deps.downloadRelease(deps.client, deps.repository)
 	if err != nil {
-		return fmt.Errorf("fetch GitHub release %q failed: %w", selfUpdateReleaseTag, err)
+		return fmt.Errorf("fetch latest GitHub release failed: %w", err)
 	}
 	asset, ok := selectSelfUpdateAsset(release, deps.currentVersion)
 	if !ok {
@@ -108,7 +106,7 @@ func ensureSelfUpdate(deps selfUpdateDeps, ui startupUI) error {
 }
 
 func fetchLatestGithubRelease(client *http.Client, repository string) (githubRelease, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/tags/%s", repository, selfUpdateReleaseTag)
+	url := latestGithubReleaseURL(repository)
 	request, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return githubRelease{}, err
@@ -132,10 +130,11 @@ func fetchLatestGithubRelease(client *http.Client, repository string) (githubRel
 	return release, nil
 }
 
+func latestGithubReleaseURL(repository string) string {
+	return fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repository)
+}
+
 func selectSelfUpdateAsset(release githubRelease, currentVersion string) (selfUpdateAsset, bool) {
-	if !strings.EqualFold(release.TagName, selfUpdateReleaseTag) {
-		return selfUpdateAsset{}, false
-	}
 	if _, err := parseSemanticVersion(currentVersion); err != nil {
 		return selfUpdateAsset{}, false
 	}

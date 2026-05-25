@@ -60,12 +60,11 @@ jobs:
           $ldflags = "-s -w -H windowsgui -X main.appVersion=${{ steps.version.outputs.version }} -X main.appGitHubRepository=${{ github.repository }}"
           go build -ldflags="$ldflags" -trimpath -o "${{ steps.version.outputs.asset }}" .
 
-      - name: Create and push release tags
+      - name: Create and push release tag
         if: steps.version.outputs.release == 'true'
         shell: pwsh
         env:
           TAG_NAME: ${{ steps.version.outputs.tag }}
-          LATEST_TAG_NAME: latest
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           git fetch --tags
@@ -90,28 +89,13 @@ jobs:
             git push origin "$env:TAG_NAME"
           }
 
-          git tag -f "$env:LATEST_TAG_NAME" "$env:GITHUB_SHA"
-          git push origin "refs/tags/$env:LATEST_TAG_NAME" --force
-
-      - name: Create versioned GitHub Release
+      - name: Create GitHub Release
         if: steps.version.outputs.release == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           target_commitish: ${{ github.sha }}
           name: Release ${{ steps.version.outputs.version }}
-          make_latest: false
-          files: ./${{ steps.version.outputs.asset }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT || github.token }}
-
-      - name: Create latest GitHub Release
-        if: steps.version.outputs.release == 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: latest
-          target_commitish: ${{ github.sha }}
-          name: latest
           make_latest: true
           overwrite_files: true
           files: ./${{ steps.version.outputs.asset }}

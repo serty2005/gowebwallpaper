@@ -4,7 +4,7 @@ import "testing"
 
 func TestSelectSelfUpdateAssetUsesNewerVersionFromLatestRelease(t *testing.T) {
 	release := githubRelease{
-		TagName: "latest",
+		TagName: "1.2.4",
 		Assets: []githubReleaseAsset{
 			{Name: "notes.txt", BrowserDownloadURL: "https://example.test/notes.txt"},
 			{Name: "webwallpaper-1.2.4.exe", BrowserDownloadURL: "https://example.test/webwallpaper-1.2.4.exe"},
@@ -25,9 +25,18 @@ func TestSelectSelfUpdateAssetUsesNewerVersionFromLatestRelease(t *testing.T) {
 	}
 }
 
+func TestLatestGithubReleaseURLUsesLatestRedirectEndpoint(t *testing.T) {
+	got := latestGithubReleaseURL("serty2005/gowebwallpaper")
+
+	want := "https://api.github.com/repos/serty2005/gowebwallpaper/releases/latest"
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
 func TestSelectSelfUpdateAssetSkipsSameOrOlderVersions(t *testing.T) {
 	release := githubRelease{
-		TagName: "latest",
+		TagName: "1.2.3",
 		Assets: []githubReleaseAsset{
 			{Name: "webwallpaper-1.2.3.exe", BrowserDownloadURL: "https://example.test/webwallpaper-1.2.3.exe"},
 			{Name: "webwallpaper-1.2.2.exe", BrowserDownloadURL: "https://example.test/webwallpaper-1.2.2.exe"},
@@ -43,7 +52,7 @@ func TestSelectSelfUpdateAssetSkipsSameOrOlderVersions(t *testing.T) {
 
 func TestSelectSelfUpdateAssetSkipsDevBuilds(t *testing.T) {
 	release := githubRelease{
-		TagName: "latest",
+		TagName: "1.2.4",
 		Assets: []githubReleaseAsset{
 			{Name: "webwallpaper-1.2.4.exe", BrowserDownloadURL: "https://example.test/webwallpaper-1.2.4.exe"},
 		},
