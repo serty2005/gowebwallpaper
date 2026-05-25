@@ -1,47 +1,54 @@
 package main
 
 import (
-	"encoding/xml"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
+
+	"golang.org/x/sys/windows/registry"
 )
 
-const autostartTaskName = "Go Web Wallpaper"
+const (
+	autostartRunKeyPath   = `Software\Microsoft\Windows\CurrentVersion\Run`
+	autostartRunValueName = "Go Web Wallpaper"
+)
 
 type autostartDeps struct {
-	executable func() (string, error)
-	run        func(name string, args ...string) ([]byte, error)
-}
-
-type scheduledTaskXML struct {
-	Settings struct {
-		Enabled string `xml:"Enabled"`
-	} `xml:"Settings"`
-	Actions struct {
-		Execs []scheduledTaskExec `xml:"Exec"`
-	} `xml:"Actions"`
-}
-
-type scheduledTaskExec struct {
-	Command   string `xml:"Command"`
-	Arguments string `xml:"Arguments"`
+	executable     func() (string, error)
+	readRunValue   func(name string) (string, error)
+	writeRunValue  func(name, value string) error
+	deleteRunValue func(name string) error
 }
 
 func defaultAutostartDeps() autostartDeps {
 	return autostartDeps{
 		executable: os.Executable,
-		run: func(name string, args ...string) ([]byte, error) {
-			debugLogf("autostart command input name=%q args=%q", name, args)
-			command := exec.Command(name, args...)
-			command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-			output, err := command.CombinedOutput()
-			debugLogf("autostart command output name=%q error=%v output=%q", name, err, strings.TrimSpace(string(output)))
-			return output, err
+		readRunValue: func(name string) (string, error) {
+			key, err := registry.OpenKey(registry.CURRENT_USER, autostartRunKeyPath, registry.QUERY_VALUE)
+			if err != nil {
+				return "", err
+			}
+			defer key.Close()
+			value, _, err := key.GetStringValue(name)
+			return value, err
+		},
+		writeRunValue: func(name, value string) error {
+			key, _, err := registry.CreateKey(registry.CURRENT_USER, autostartRunKeyPath, registry.SET_VALUE)
+			if err != nil {
+				return err
+			}
+			defer key.Close()
+			return key.SetStringValue(name, value)
+		},
+		deleteRunValue: func(name string) error {
+			key, err := registry.OpenKey(registry.CURRENT_USER, autostartRunKeyPath, registry.SET_VALUE)
+			if err != nil {
+				return err
+			}
+			defer key.Close()
+			return key.DeleteValue(name)
 		},
 	}
 }
@@ -66,31 +73,22 @@ func ensureAutostartEnabled(deps autostartDeps) error {
 	if strings.Contains(exe, `"`) {
 		return fmt.Errorf("executable path contains an unsupported quote: %s", exe)
 	}
-	output, err := deps.run("schtasks.exe",
-		"/Create",
-		"/TN", autostartTaskName,
-		"/SC", "ONLOGON",
-		"/TR", quoteTaskRunPath(exe),
-		"/RL", "LIMITED",
-		"/F",
-	)
-	if err != nil {
-		return fmt.Errorf("create autostart task failed: %w: %s", err, strings.TrimSpace(string(output)))
+	if err := deps.writeRunValue(autostartRunValueName, quoteRunPath(exe)); err != nil {
+		return fmt.Errorf("write autostart Run value failed: %w", err)
 	}
 	enabled, err := autostartEnabled(deps)
 	if err != nil {
 		return err
 	}
 	if !enabled {
-		return errors.New("autostart task was created but verification failed")
+		return errors.New("autostart Run value was written but verification failed")
 	}
 	return nil
 }
 
 func disableAutostart(deps autostartDeps) error {
-	output, err := deps.run("schtasks.exe", "/Delete", "/TN", autostartTaskName, "/F")
-	if err != nil && !looksLikeMissingTask(output, err) {
-		return fmt.Errorf("delete autostart task failed: %w: %s", err, strings.TrimSpace(string(output)))
+	if err := deps.deleteRunValue(autostartRunValueName); err != nil && !errors.Is(err, registry.ErrNotExist) {
+		return fmt.Errorf("delete autostart Run value failed: %w", err)
 	}
 	return nil
 }
@@ -100,39 +98,17 @@ func autostartEnabled(deps autostartDeps) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	output, err := deps.run("schtasks.exe", "/Query", "/TN", autostartTaskName, "/XML")
+	value, err := deps.readRunValue(autostartRunValueName)
 	if err != nil {
-		return false, nil
-	}
-	task, err := parseScheduledTaskXML(output)
-	if err != nil {
+		if errors.Is(err, registry.ErrNotExist) {
+			return false, nil
+		}
 		return false, err
 	}
-	if !task.Enabled() {
-		return false, nil
-	}
-	for _, action := range task.Actions.Execs {
-		if sameExecutablePath(exe, action.Command) {
-			return true, nil
-		}
-	}
-	return false, nil
+	return sameExecutablePath(exe, value), nil
 }
 
-func parseScheduledTaskXML(output []byte) (scheduledTaskXML, error) {
-	var task scheduledTaskXML
-	if err := xml.Unmarshal(output, &task); err != nil {
-		return scheduledTaskXML{}, fmt.Errorf("parse autostart task XML failed: %w", err)
-	}
-	return task, nil
-}
-
-func (task scheduledTaskXML) Enabled() bool {
-	enabled := strings.TrimSpace(task.Settings.Enabled)
-	return enabled == "" || strings.EqualFold(enabled, "true")
-}
-
-func quoteTaskRunPath(path string) string {
+func quoteRunPath(path string) string {
 	return `"` + path + `"`
 }
 
@@ -143,11 +119,4 @@ func sameExecutablePath(expected, actual string) bool {
 		return false
 	}
 	return strings.EqualFold(filepath.Clean(expected), filepath.Clean(actual))
-}
-
-func looksLikeMissingTask(output []byte, err error) bool {
-	text := strings.ToLower(string(output) + " " + err.Error())
-	return strings.Contains(text, "cannot find") ||
-		strings.Contains(text, "does not exist") ||
-		strings.Contains(text, "cannot find the file")
 }

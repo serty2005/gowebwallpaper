@@ -97,3 +97,15 @@ func TestShouldLogMonitorSearchAttemptThrottlesRepeatedChecks(t *testing.T) {
 		t.Fatal("expected periodic monitor search heartbeat to be logged")
 	}
 }
+
+func TestMonitorEnumCallbackValueIsReused(t *testing.T) {
+	first := monitorEnumCallbackValue()
+	second := monitorEnumCallbackValue()
+
+	if first == 0 {
+		t.Fatal("expected monitor enum callback to be initialized")
+	}
+	if first != second {
+		t.Fatal("expected monitor enum callback to be reused between calls")
+	}
+}

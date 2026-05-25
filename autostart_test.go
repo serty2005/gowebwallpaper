@@ -2,51 +2,52 @@ package main
 
 import (
 	"errors"
-	"strings"
 	"testing"
+
+	"golang.org/x/sys/windows/registry"
 )
 
-func TestAutostartEnableCreatesLogonTaskAndVerifiesIt(t *testing.T) {
-	var calls []string
+func TestAutostartEnableWritesRunRegistryValueAndVerifiesIt(t *testing.T) {
+	values := map[string]string{}
 	deps := autostartDeps{
 		executable: func() (string, error) {
 			return `C:\Program Files\Go Web Wallpaper\gowebwallpaper.exe`, nil
 		},
-		run: func(name string, args ...string) ([]byte, error) {
-			calls = append(calls, name+" "+strings.Join(args, " "))
-			if name != "schtasks.exe" {
-				t.Fatalf("unexpected command %q", name)
+		readRunValue: func(name string) (string, error) {
+			value, ok := values[name]
+			if !ok {
+				return "", registry.ErrNotExist
 			}
-			switch {
-			case containsAll(args, "/Create", "/SC", "ONLOGON", "/TN", autostartTaskName, "/RL", "LIMITED", "/F"):
-				if !containsArg(args, `/TR`) || !containsArg(args, `"C:\Program Files\Go Web Wallpaper\gowebwallpaper.exe"`) {
-					t.Fatalf("create args do not quote executable path: %#v", args)
-				}
-				return []byte("SUCCESS"), nil
-			case containsAll(args, "/Query", "/XML", "/TN", autostartTaskName):
-				return []byte(`<Task><Settings><Enabled>true</Enabled></Settings><Actions><Exec><Command>C:\Program Files\Go Web Wallpaper\gowebwallpaper.exe</Command></Exec></Actions></Task>`), nil
-			default:
-				t.Fatalf("unexpected schtasks args: %#v", args)
-			}
-			return nil, nil
+			return value, nil
+		},
+		writeRunValue: func(name, value string) error {
+			values[name] = value
+			return nil
+		},
+		deleteRunValue: func(name string) error {
+			delete(values, name)
+			return nil
 		},
 	}
 
 	if err := ensureAutostartEnabled(deps); err != nil {
 		t.Fatalf("ensureAutostartEnabled returned error: %v", err)
 	}
-	if len(calls) != 2 {
-		t.Fatalf("expected create and verify calls, got %#v", calls)
+	if values[autostartRunValueName] != `"C:\Program Files\Go Web Wallpaper\gowebwallpaper.exe"` {
+		t.Fatalf("unexpected Run value: %q", values[autostartRunValueName])
 	}
 }
 
-func TestAutostartEnabledRequiresEnabledMatchingTask(t *testing.T) {
+func TestAutostartEnabledRequiresMatchingCurrentExecutableRunValue(t *testing.T) {
 	deps := autostartDeps{
 		executable: func() (string, error) {
 			return `C:\Apps\gowebwallpaper.exe`, nil
 		},
-		run: func(name string, args ...string) ([]byte, error) {
-			return []byte(`<Task><Settings><Enabled>true</Enabled></Settings><Actions><Exec><Command>C:\Apps\gowebwallpaper.exe</Command></Exec></Actions></Task>`), nil
+		readRunValue: func(name string) (string, error) {
+			if name != autostartRunValueName {
+				t.Fatalf("unexpected Run value name %q", name)
+			}
+			return `"C:\Apps\gowebwallpaper.exe"`, nil
 		},
 	}
 
@@ -55,17 +56,17 @@ func TestAutostartEnabledRequiresEnabledMatchingTask(t *testing.T) {
 		t.Fatalf("autostartEnabled returned error: %v", err)
 	}
 	if !enabled {
-		t.Fatal("expected matching enabled task")
+		t.Fatal("expected matching Run value")
 	}
 }
 
-func TestAutostartEnabledReturnsFalseWhenTaskIsMissing(t *testing.T) {
+func TestAutostartEnabledReturnsFalseWhenRunValuePointsElsewhere(t *testing.T) {
 	deps := autostartDeps{
 		executable: func() (string, error) {
 			return `C:\Apps\gowebwallpaper.exe`, nil
 		},
-		run: func(name string, args ...string) ([]byte, error) {
-			return nil, errors.New("ERROR: The system cannot find the file specified.")
+		readRunValue: func(name string) (string, error) {
+			return `C:\Other\gowebwallpaper.exe`, nil
 		},
 	}
 
@@ -74,24 +75,54 @@ func TestAutostartEnabledReturnsFalseWhenTaskIsMissing(t *testing.T) {
 		t.Fatalf("autostartEnabled returned error: %v", err)
 	}
 	if enabled {
-		t.Fatal("expected missing task to be disabled")
+		t.Fatal("expected non-matching Run value to be disabled")
 	}
 }
 
-func containsAll(args []string, values ...string) bool {
-	for _, value := range values {
-		if !containsArg(args, value) {
-			return false
-		}
+func TestAutostartEnabledReturnsFalseWhenRunValueIsMissing(t *testing.T) {
+	deps := autostartDeps{
+		executable: func() (string, error) {
+			return `C:\Apps\gowebwallpaper.exe`, nil
+		},
+		readRunValue: func(name string) (string, error) {
+			return "", registry.ErrNotExist
+		},
 	}
-	return true
+
+	enabled, err := autostartEnabled(deps)
+	if err != nil {
+		t.Fatalf("autostartEnabled returned error: %v", err)
+	}
+	if enabled {
+		t.Fatal("expected missing Run value to be disabled")
+	}
 }
 
-func containsArg(args []string, value string) bool {
-	for _, arg := range args {
-		if arg == value {
-			return true
-		}
+func TestDisableAutostartIgnoresMissingRunValue(t *testing.T) {
+	deps := autostartDeps{
+		deleteRunValue: func(name string) error {
+			if name != autostartRunValueName {
+				t.Fatalf("unexpected Run value name %q", name)
+			}
+			return registry.ErrNotExist
+		},
 	}
-	return false
+
+	if err := disableAutostart(deps); err != nil {
+		t.Fatalf("disableAutostart returned error: %v", err)
+	}
+}
+
+func TestDisableAutostartReportsDeleteErrors(t *testing.T) {
+	wantErr := errors.New("access denied")
+	deps := autostartDeps{
+		deleteRunValue: func(name string) error {
+			return wantErr
+		},
+	}
+
+	err := disableAutostart(deps)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected delete error, got %v", err)
+	}
 }

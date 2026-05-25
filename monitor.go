@@ -27,29 +27,39 @@ var (
 	user32                  = windows.NewLazySystemDLL("user32.dll")
 	procEnumDisplayMonitors = user32.NewProc("EnumDisplayMonitors")
 	procGetMonitorInfoW     = user32.NewProc("GetMonitorInfoW")
+	monitorEnumCallback     = syscall.NewCallback(enumDisplayMonitorCallback)
 )
 
 func getMonitors() []MonitorConfig {
 	var monitors []MonitorConfig
-	callback := syscall.NewCallback(func(hMonitor, hdcMonitor, lprcMonitor, dwData uintptr) uintptr {
-		var mi monitorInfoEx
-		mi.CbSize = uint32(unsafe.Sizeof(mi))
-		ret, _, _ := procGetMonitorInfoW.Call(hMonitor, uintptr(unsafe.Pointer(&mi)))
-		if ret == 0 {
-			return 1
-		}
-		monitors = append(monitors, MonitorConfig{
-			Name:      windows.UTF16ToString(mi.SzDevice[:]),
-			IsPrimary: mi.DwFlags&monitorInfoPrimary != 0,
-			PositionX: int(mi.RcMonitor.Left),
-			PositionY: int(mi.RcMonitor.Top),
-			Width:     int(mi.RcMonitor.Right - mi.RcMonitor.Left),
-			Height:    int(mi.RcMonitor.Bottom - mi.RcMonitor.Top),
-		})
-		return 1
-	})
-	procEnumDisplayMonitors.Call(0, 0, callback, 0)
+	procEnumDisplayMonitors.Call(0, 0, monitorEnumCallbackValue(), uintptr(unsafe.Pointer(&monitors)))
 	return monitors
+}
+
+func monitorEnumCallbackValue() uintptr {
+	return monitorEnumCallback
+}
+
+func enumDisplayMonitorCallback(hMonitor, hdcMonitor, lprcMonitor, dwData uintptr) uintptr {
+	monitors := (*[]MonitorConfig)(unsafe.Pointer(dwData))
+	if monitors == nil {
+		return 1
+	}
+	var mi monitorInfoEx
+	mi.CbSize = uint32(unsafe.Sizeof(mi))
+	ret, _, _ := procGetMonitorInfoW.Call(hMonitor, uintptr(unsafe.Pointer(&mi)))
+	if ret == 0 {
+		return 1
+	}
+	*monitors = append(*monitors, MonitorConfig{
+		Name:      windows.UTF16ToString(mi.SzDevice[:]),
+		IsPrimary: mi.DwFlags&monitorInfoPrimary != 0,
+		PositionX: int(mi.RcMonitor.Left),
+		PositionY: int(mi.RcMonitor.Top),
+		Width:     int(mi.RcMonitor.Right - mi.RcMonitor.Left),
+		Height:    int(mi.RcMonitor.Bottom - mi.RcMonitor.Top),
+	})
+	return 1
 }
 
 func FindBestMonitor(target MonitorConfig, connected []MonitorConfig) (MonitorConfig, bool) {

@@ -13,6 +13,13 @@ import (
 )
 
 func main() {
+	if supervised, err := maybeRunSupervisor(); supervised {
+		if err != nil {
+			appendSupervisorLog("supervisor failed, running child inline: error=%v", err)
+		} else {
+			return
+		}
+	}
 	if err := initFileLogging(); err != nil {
 		_ = os.WriteFile(logFileName, []byte("failed to initialize file logging: "+err.Error()+"\n"), 0644)
 	}
@@ -72,11 +79,10 @@ func onTrayReady(autoStart bool) {
 	audioMenu := systray.AddMenuItem("Audio output", "Select audio output")
 	audioItems := buildAudioMenu(audioMenu, controller)
 
-	autostartMenu := systray.AddMenuItem("Autostart", "Start Go Web Wallpaper when Windows starts")
-	autostartEnabledItem := autostartMenu.AddSubMenuItemCheckbox("Enabled", "Enable or disable Windows logon startup", false)
+	autostartItem := systray.AddMenuItemCheckbox("Autostart", "Start Go Web Wallpaper when Windows starts", false)
 	go func() {
 		defer recoverAndLogPanic("autostart refresh goroutine")
-		refreshAutostartMenuItem(autostartEnabledItem)
+		refreshAutostartMenuItem(autostartItem)
 	}()
 
 	systray.AddSeparator()
@@ -165,9 +171,9 @@ func onTrayReady(autoStart bool) {
 
 	go func() {
 		defer recoverAndLogPanic("autostart menu goroutine")
-		for range autostartEnabledItem.ClickedCh {
-			wantEnabled := !autostartEnabledItem.Checked()
-			autostartEnabledItem.Disable()
+		for range autostartItem.ClickedCh {
+			wantEnabled := !autostartItem.Checked()
+			autostartItem.Disable()
 			var err error
 			if wantEnabled {
 				log.Printf("autostart enable requested")
@@ -179,8 +185,8 @@ func onTrayReady(autoStart bool) {
 			if err != nil {
 				log.Printf("autostart update failed: %v", err)
 			}
-			refreshAutostartMenuItem(autostartEnabledItem)
-			autostartEnabledItem.Enable()
+			refreshAutostartMenuItem(autostartItem)
+			autostartItem.Enable()
 		}
 	}()
 
