@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"context"
+	"testing"
+	"time"
+)
 
 func TestFindBestMonitorPrefersExactNameWhenResolutionsDuplicate(t *testing.T) {
 	target := MonitorConfig{Name: `\\.\DISPLAY2`, PositionX: -2160, PositionY: -395, Width: 1080, Height: 1920, Active: true}
@@ -95,6 +99,80 @@ func TestShouldLogMonitorSearchAttemptThrottlesRepeatedChecks(t *testing.T) {
 	}
 	if !shouldLogMonitorSearchAttempt(60) {
 		t.Fatal("expected periodic monitor search heartbeat to be logged")
+	}
+}
+
+func TestWaitForTargetMonitorSurvivesShortDisconnect(t *testing.T) {
+	target := MonitorConfig{Name: `\\.\DISPLAY2`, PositionX: 1920, PositionY: 0, Width: 1920, Height: 1080, Active: true}
+	primary := MonitorConfig{Name: `\\.\DISPLAY1`, IsPrimary: true, PositionX: 0, PositionY: 0, Width: 1280, Height: 720}
+	config := &AppConfig{Monitors: []MonitorConfig{target}}
+	snapshots := [][]MonitorConfig{
+		{primary},
+		{primary},
+		{primary, target},
+	}
+	calls := 0
+
+	match, err := waitForTargetMonitorWithOptions(context.Background(), config, monitorWaitOptions{
+		pollInterval: time.Second,
+		getMonitors: func() []MonitorConfig {
+			if calls >= len(snapshots) {
+				return snapshots[len(snapshots)-1]
+			}
+			snapshot := snapshots[calls]
+			calls++
+			return snapshot
+		},
+		sleep: func(context.Context, time.Duration) error {
+			return nil
+		},
+	})
+
+	if err != nil {
+		t.Fatalf("expected monitor to return without timeout, got %v", err)
+	}
+	if match.Name != target.Name {
+		t.Fatalf("expected %s, got %s", target.Name, match.Name)
+	}
+	if calls != 3 {
+		t.Fatalf("expected three monitor snapshots, got %d", calls)
+	}
+}
+
+func TestWaitForTargetMonitorSurvivesLongDisconnect(t *testing.T) {
+	target := MonitorConfig{Name: `\\.\DISPLAY2`, PositionX: 1920, PositionY: 0, Width: 1920, Height: 1080, Active: true}
+	primary := MonitorConfig{Name: `\\.\DISPLAY1`, IsPrimary: true, PositionX: 0, PositionY: 0, Width: 1280, Height: 720}
+	config := &AppConfig{Monitors: []MonitorConfig{target}}
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	returnsAt := now.Add(10 * 24 * time.Hour)
+	sleepCalls := 0
+
+	match, err := waitForTargetMonitorWithOptions(context.Background(), config, monitorWaitOptions{
+		pollInterval: 24 * time.Hour,
+		getMonitors: func() []MonitorConfig {
+			if now.Before(returnsAt) {
+				return []MonitorConfig{primary}
+			}
+			return []MonitorConfig{primary, target}
+		},
+		sleep: func(_ context.Context, duration time.Duration) error {
+			sleepCalls++
+			now = now.Add(duration)
+			return nil
+		},
+		now: func() time.Time {
+			return now
+		},
+	})
+
+	if err != nil {
+		t.Fatalf("expected monitor to return after a long disconnect, got %v", err)
+	}
+	if match.Name != target.Name {
+		t.Fatalf("expected %s, got %s", target.Name, match.Name)
+	}
+	if sleepCalls != 10 {
+		t.Fatalf("expected ten simulated days of waiting, got %d", sleepCalls)
 	}
 }
 

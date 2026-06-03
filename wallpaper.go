@@ -200,11 +200,19 @@ func (c *WallpaperController) runWebView(ctx context.Context, started chan<- err
 		startedSent = true
 		return
 	}
-	monitor, err := waitForTargetMonitor(ctx, config, 20*time.Second)
+	if _, ok, _ := resolveTargetMonitorSnapshot(target, getMonitors()); !ok {
+		log.Printf("target monitor is not connected yet; waiting without timeout: %s", formatMonitor(target))
+		started <- nil
+		startedSent = true
+	}
+	monitor, err := waitForTargetMonitor(ctx, config)
 	if err != nil {
 		log.Printf("target monitor wait failed: %v", err)
-		started <- err
-		startedSent = true
+		if !startedSent {
+			started <- err
+			startedSent = true
+		}
+		c.clearIdleCancel()
 		return
 	}
 	log.Printf("target monitor resolved: target=%s connected=%s", formatMonitor(target), formatMonitor(monitor))
@@ -243,7 +251,6 @@ func (c *WallpaperController) runWebView(ctx context.Context, started chan<- err
 		if c.webview == w {
 			c.webview = nil
 			c.hwnd = 0
-			c.running = false
 		}
 		c.mu.Unlock()
 
@@ -261,7 +268,7 @@ func (c *WallpaperController) runWebView(ctx context.Context, started chan<- err
 		select {
 		case <-monitorMissing:
 			log.Printf("waiting for target monitor to return: %s", formatMonitor(target))
-			monitor, err = waitForTargetMonitor(ctx, &AppConfig{Monitors: []MonitorConfig{target}}, 24*time.Hour)
+			monitor, err = waitForTargetMonitor(ctx, &AppConfig{Monitors: []MonitorConfig{target}})
 			if err != nil {
 				log.Printf("target monitor wait after disappearance stopped: %v", err)
 				c.clearIdleCancel()
@@ -331,17 +338,38 @@ func (c *WallpaperController) createWebViewWindow(config *AppConfig, monitor Mon
 	return w, hwnd, nil
 }
 
-func waitForTargetMonitor(ctx context.Context, config *AppConfig, timeout time.Duration) (MonitorConfig, error) {
-	debugLogf("waitForTargetMonitor input timeout=%s", timeout)
-	deadline := time.NewTimer(timeout)
-	defer deadline.Stop()
-	tick := time.NewTicker(time.Second)
-	defer tick.Stop()
+type monitorWaitOptions struct {
+	pollInterval time.Duration
+	maxWait      time.Duration
+	getMonitors  func() []MonitorConfig
+	sleep        func(context.Context, time.Duration) error
+	now          func() time.Time
+}
+
+func waitForTargetMonitor(ctx context.Context, config *AppConfig) (MonitorConfig, error) {
+	return waitForTargetMonitorWithOptions(ctx, config, monitorWaitOptions{})
+}
+
+func waitForTargetMonitorWithOptions(ctx context.Context, config *AppConfig, options monitorWaitOptions) (MonitorConfig, error) {
+	if options.pollInterval <= 0 {
+		options.pollInterval = time.Second
+	}
+	if options.getMonitors == nil {
+		options.getMonitors = getMonitors
+	}
+	if options.sleep == nil {
+		options.sleep = sleepContext
+	}
+	if options.now == nil {
+		options.now = time.Now
+	}
+	debugLogf("waitForTargetMonitor input maxWait=%s pollInterval=%s", options.maxWait, options.pollInterval)
 
 	attempt := 0
+	startedAt := options.now()
 	for {
 		attempt++
-		connected := getMonitors()
+		connected := options.getMonitors()
 		target, hasTarget := activeMonitor(config)
 		if shouldLogMonitorSearchAttempt(attempt) {
 			debugLogf("monitor search attempt=%d connected=%s hasTarget=%t target=%s", attempt, formatMonitors(connected), hasTarget, formatMonitor(target))
@@ -360,15 +388,41 @@ func waitForTargetMonitor(ctx context.Context, config *AppConfig, timeout time.D
 				log.Printf("monitor search attempt %d: no match target=%s reason=%s connected=%s", attempt, formatMonitor(target), reason, formatMonitors(connected))
 			}
 		}
+		if options.maxWait > 0 {
+			elapsed := options.now().Sub(startedAt)
+			if elapsed >= options.maxWait {
+				log.Printf("monitor search timed out after %d attempts", attempt)
+				return MonitorConfig{}, fmt.Errorf("target monitor was not found")
+			}
+		}
+		sleepFor := options.pollInterval
+		if options.maxWait > 0 {
+			remaining := options.maxWait - options.now().Sub(startedAt)
+			if remaining < sleepFor {
+				sleepFor = remaining
+			}
+		}
 		select {
 		case <-ctx.Done():
 			log.Printf("monitor search cancelled after %d attempts", attempt)
 			return MonitorConfig{}, ctx.Err()
-		case <-deadline.C:
-			log.Printf("monitor search timed out after %d attempts", attempt)
-			return MonitorConfig{}, fmt.Errorf("target monitor was not found")
-		case <-tick.C:
+		default:
 		}
+		if err := options.sleep(ctx, sleepFor); err != nil {
+			log.Printf("monitor search cancelled after %d attempts", attempt)
+			return MonitorConfig{}, err
+		}
+	}
+}
+
+func sleepContext(ctx context.Context, duration time.Duration) error {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 

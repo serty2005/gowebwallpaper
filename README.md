@@ -1,96 +1,58 @@
 # Go Web Wallpaper
 
-Go Web Wallpaper keeps a WebView2 page in a strict borderless fullscreen window on a selected Windows monitor. The window is forced to `topmost` and periodically repaired if Windows or another app moves/resizes it.
+Go Web Wallpaper показывает выбранную веб-страницу как полноэкранные обои на отдельном мониторе Windows.
 
-## Current Behavior
+Приложение живет в области уведомлений, открывает страницу в отдельном окне без рамки, удерживает его поверх остальных окон и автоматически возвращает показ на выбранный монитор, если тот был временно отключен.
 
-- Runs on Windows 10/11.
-- Checks GitHub's latest release on startup for a newer `webwallpaper-X.Y.Z.exe` asset. Release builds download the newer binary, replace the current executable after exit, and restart.
-- Checks for Microsoft Edge WebView2 Runtime on startup. If it is missing, the app downloads the full Evergreen Standalone Installer from Microsoft with visible progress, installs it silently, and restarts itself.
-- Shows a minimal startup dialog where you can confirm or change the web page URL.
-- Creates a local `config.json` on first start, but does not open the browser window until you click `Start` in the tray.
-- Lets you select the target monitor from the tray menu.
-- Keeps the WebView2 window borderless, fullscreen, and topmost.
-- Re-checks the selected monitor and repairs the window position every second.
-- Lets you select an audio output from the tray menu.
-- Injects an audio probe into the page:
-  - unmutes `<audio>` and `<video>` elements;
-  - reports playback events to the app log;
-  - tries to route media elements with `HTMLMediaElement.setSinkId()` when the browser exposes matching output devices.
+## Что умеет приложение
 
-Audio routing is best-effort. WebView2 does not expose a simple native "set output device" API through the current Go wrapper, and pages using WebAudio may ignore `setSinkId()`. In that case Windows' default output is used.
+- Показывает веб-страницу на выбранном мониторе.
+- Работает через значок в трее Windows.
+- Позволяет выбрать монитор для показа.
+- Позволяет выбрать аудиовыход для звука со страницы.
+- Сохраняет выбранную страницу, монитор и аудиоустройство.
+- Автоматически проверяет наличие Microsoft Edge WebView2 Runtime и устанавливает его при необходимости.
+- Проверяет обновления приложения при запуске.
+- Следит за окном и возвращает его в полноэкранный режим, если Windows или другая программа изменила его размер или положение.
+- Ждет возвращения выбранного монитора без ограничения по времени.
 
-## Build
+## Первый запуск
 
-```powershell
-go test ./...
-go build -o gowebwallpaper.exe .
-```
+При первом запуске приложение попросит указать адрес веб-страницы. Можно использовать обычный интернет-адрес или локальную страницу, например страницу, которую показывает другое приложение на этом компьютере.
 
-To build without a console window:
+После первого запуска приложение появится в трее. Перед началом показа удобно выбрать нужный монитор и, если требуется, аудиоустройство.
 
-```powershell
-go build -ldflags="-H windowsgui" -o gowebwallpaper.exe .
-```
+## Меню в трее
 
-## Run
+- `Start` включает или выключает показ страницы.
+- `Monitor` выбирает монитор, на котором должна отображаться страница.
+- `Audio output` выбирает устройство вывода звука или системное устройство по умолчанию.
+- `Exit` закрывает приложение.
 
-```powershell
-.\gowebwallpaper.exe
-```
+Если изменить монитор или аудиовыход во время работы показа, приложение перезапустит окно и применит новый выбор. Если показ выключен, настройка просто сохранится и будет использована при следующем запуске.
 
-On first run the app scans connected monitors and creates `config.json` next to the executable. During development it uses the repository `config.json` when that file already exists.
+## Отключение монитора
 
-If WebView2 Runtime is not installed, the app shows a Windows message, downloads Microsoft's Evergreen Standalone Installer with a progress window, installs it, and restarts. After the startup check, a small URL dialog opens. Existing configs auto-start after the dialog; first-run configs stay stopped so you can choose Monitor and Audio output from the tray before pressing `Start`.
+Если выбранный монитор отключить, перевести в сон, отсоединить от видеокарты или временно потерять из-за настроек Windows, приложение остановит окно показа и будет ждать возвращения этого же монитора.
 
-Release builds self-update from `https://api.github.com/repos/<owner>/<repo>/releases/latest`. Development builds use `appVersion=dev` and skip the update check.
+Когда монитор снова появится, показ автоматически возобновится. Ожидание не ограничено несколькими секундами или одним днем: монитор можно вернуть даже спустя несколько дней.
 
-## Logs
+Чтобы приложение не открылось на неправильном экране, оно старается распознать выбранный монитор по имени, положению и размеру. Если Windows изменила имя монитора, но положение и размер совпали, приложение сможет восстановить показ. Если совпадение неоднозначное, приложение не будет угадывать.
 
-The app writes runtime logs to `gowebwallpaper.log` next to `gowebwallpaper.exe`. The log records startup, tray actions, monitor search attempts, ambiguous monitor matches, window repair, restarts, audio selection, and audio playback probe events.
+## Звук
 
-## Tray Menu
+Выбор аудиовыхода работает насколько это позволяет WebView2 и сама веб-страница.
 
-- `Start`: toggles the WebView2 window. Checked means the browser is running; click again to stop it.
-- `Monitor`: selects the exact target monitor.
-- `Audio output`: selects the desired output device or `System default`.
-- `Exit`: stops the window and exits the tray app.
+Обычные элементы видео и аудио чаще всего можно перенаправить на выбранное устройство. Некоторые страницы используют более сложную обработку звука, и в таком случае Windows может оставить звук на системном устройстве по умолчанию.
 
-Changing Monitor or Audio output restarts the browser only when it is already running. If it is stopped, the new setting is saved and used on the next `Start`.
+## Обновления и WebView2
 
-## Config
+При запуске приложение проверяет, доступна ли новая версия. Если обновление найдено, оно будет загружено и применено автоматически.
 
-Use `config.example.json` as a template. `config.json` is local machine state and is ignored by git.
+Если на компьютере нет Microsoft Edge WebView2 Runtime, приложение покажет сообщение, загрузит установщик Microsoft, установит WebView2 и перезапустится.
 
-```json
-{
-  "URL": "http://localhost:3100/#/columns-fullscreen",
-  "Monitors": [
-    {
-      "Name": "\\\\.\\DISPLAY2",
-      "IsPrimary": false,
-      "Active": true,
-      "PositionX": -2160,
-      "PositionY": -395,
-      "Width": 1080,
-      "Height": 1920
-    }
-  ],
-  "Audio": {
-    "ID": "",
-    "Name": "",
-    "Active": false
-  }
-}
-```
+## Журнал
 
-Monitor matching prefers exact `Name`, then exact bounds, then a unique size-only fallback. If two monitors have the same size and neither name nor bounds match, the app refuses the ambiguous match instead of opening on the wrong screen.
+Рядом с приложением создается файл `gowebwallpaper.log`. Он помогает понять, что происходит при запуске, выборе монитора, потере монитора, восстановлении показа, обновлении и работе со звуком.
 
-## Verification
-
-```powershell
-gofmt -w (Get-ChildItem -Filter *.go | ForEach-Object { $_.FullName })
-go test ./...
-go vet ./...
-go build -o gowebwallpaper.exe .
-```
+Если приложение ведет себя неожиданно, этот файл стоит приложить к описанию проблемы.
